@@ -35,4 +35,3 @@ class FingerprintSensor:
         # Match found!
         print(f"Fingerprint matched with ID #{self.finger.finger_id}, confidence: {self.finger.confidence}")
         return True
-    

@@ -1,1 +1,6 @@
 __pycache__
+
+# face_recognition_folder
+dataset/
+.lgd-nfy0
+encodings.pickle
