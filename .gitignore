@@ -1,8 +1,18 @@
-__pycache__
-main_assets/
-documents/
+# Environment variables
+*.env
 
 # face_recognition_folder
 dataset/
 .lgd-nfy0
 encodings.pickle
+
+# VS Code
+__pycache__/
+.vscode/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+pi_assets/
+documents/
