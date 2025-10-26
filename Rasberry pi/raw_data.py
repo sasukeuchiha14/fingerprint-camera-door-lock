@@ -89,48 +89,67 @@ class RawDataCollector:
             self.log_data("FINGERPRINT", f"Baudrate: 57600, Port: /dev/ttyAMA0")
             
             # Get sensor parameters
-            if finger.read_sysparam() == adafruit_fingerprint.OK:
-                self.log_data("FINGERPRINT", f"Sensor capacity: {finger.capacity}")
-                self.log_data("FINGERPRINT", f"Security level: {finger.security_level}")
-                self.log_data("FINGERPRINT", f"Template count: {finger.template_count}")
+            try:
+                # Try to read system parameters if available
+                self.log_data("FINGERPRINT", f"Library count: {finger.library_size}")
+                self.log_data("FINGERPRINT", f"Status register: {finger.status_register}")
+            except AttributeError:
+                # If specific attributes don't exist, just log basic info
+                self.log_data("FINGERPRINT", "Sensor parameters: Basic R307 fingerprint sensor")
             
             self.fingerprint_active = True
             print("👆 Place finger on sensor to capture raw data...")
             
             scan_count = 0
-            while self.running and scan_count < 10:  # Limit to 10 scans for demo
+            while self.running and scan_count < 3:  # Limit to 3 scans for demo
                 try:
                     self.log_data("FINGERPRINT", f"Scan attempt #{scan_count + 1}")
                     
                     # Wait for finger placement
                     self.log_data("FINGERPRINT", "Waiting for finger placement...")
                     
-                    # Get raw image data
-                    result = finger.get_image()
-                    if result == adafruit_fingerprint.OK:
-                        self.log_data("FINGERPRINT", "✅ Image captured successfully")
+                    # Get raw image data with timeout
+                    timeout_count = 0
+                    while timeout_count < 50:  # 5 second timeout
+                        result = finger.get_image()
+                        if result == adafruit_fingerprint.OK:
+                            self.log_data("FINGERPRINT", "✅ Image captured successfully")
+                            break
+                        elif result == adafruit_fingerprint.NOFINGER:
+                            if timeout_count % 10 == 0:  # Log every second
+                                self.log_data("FINGERPRINT", "No finger detected, waiting...")
+                        elif result == adafruit_fingerprint.IMAGEFAIL:
+                            self.log_data("FINGERPRINT", "❌ Image capture failed")
+                            break
+                        else:
+                            self.log_data("FINGERPRINT", f"❌ Unknown error code: {result}")
+                            break
                         
+                        time.sleep(0.1)
+                        timeout_count += 1
+                    
+                    if result == adafruit_fingerprint.OK:
                         # Convert to template
-                        if finger.image_2_tz(1) == adafruit_fingerprint.OK:
+                        template_result = finger.image_2_tz(1)
+                        if template_result == adafruit_fingerprint.OK:
                             self.log_data("FINGERPRINT", "✅ Template conversion successful")
                             
                             # Attempt search
                             search_result = finger.finger_search()
                             if search_result == adafruit_fingerprint.OK:
                                 self.log_data("FINGERPRINT", f"✅ MATCH FOUND - ID: {finger.finger_id}, Confidence: {finger.confidence}")
-                            else:
+                            elif search_result == adafruit_fingerprint.NOTFOUND:
                                 self.log_data("FINGERPRINT", "❌ No match found in database")
+                            else:
+                                self.log_data("FINGERPRINT", f"❌ Search error code: {search_result}")
                         else:
-                            self.log_data("FINGERPRINT", "❌ Template conversion failed")
-                    elif result == adafruit_fingerprint.NOFINGER:
-                        self.log_data("FINGERPRINT", "No finger detected")
-                    elif result == adafruit_fingerprint.IMAGEFAIL:
-                        self.log_data("FINGERPRINT", "❌ Image capture failed")
+                            self.log_data("FINGERPRINT", f"❌ Template conversion failed - Error: {template_result}")
                     else:
-                        self.log_data("FINGERPRINT", f"❌ Error code: {result}")
+                        self.log_data("FINGERPRINT", "❌ Failed to capture image after timeout")
                     
                     scan_count += 1
-                    time.sleep(2)  # Wait between scans
+                    self.log_data("FINGERPRINT", f"Scan #{scan_count} completed, waiting 3 seconds for next scan...")
+                    time.sleep(3)  # Wait between scans
                     
                 except Exception as e:
                     self.log_data("FINGERPRINT", f"❌ Exception: {str(e)}", "ERROR")
@@ -270,7 +289,7 @@ class RawDataCollector:
             last_pressed = []
             key_count = 0
             
-            while self.running and key_count < 20:  # Limit to 20 keypresses for demo
+            while self.running and key_count < 7:  # Limit to 7 keypresses for demo
                 try:
                     pressed_keys = []
                     
