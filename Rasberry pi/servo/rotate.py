@@ -14,7 +14,7 @@ class DoorLock:
         """Rotate servo to unlock the door"""
         try:
             print("Unlocking door...")
-            self.servo.angle = -90
+            self.servo.angle = 0
             sleep(5)  # Keep door unlocked for 5 seconds
             return True
         except Exception as e:

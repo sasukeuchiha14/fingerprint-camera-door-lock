@@ -1,164 +1,225 @@
+"""
+Face Recognition Module
+Handles real-time face detection and recognition using trained models
+"""
+
 import face_recognition
 import cv2
 import numpy as np
 from picamera2 import Picamera2
 import time
 import pickle
+import os
 
-class FaceRecognizer:
+
+class FaceRecognition:
+    """Main face recognition class for door lock system"""
+    
     def __init__(self, encodings_path="encodings.pickle", authorized_names=None):
-        # Load pre-trained face encodings
-        print("[INFO] loading encodings...")
-        import os
-        # Get the directory where the script is located
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Create absolute path to encodings file
-        encodings_path = os.path.join(script_dir, encodings_path)
-        print(f"[INFO] looking for encodings at: {encodings_path}")
-        with open(encodings_path, "rb") as f:
-            data = pickle.loads(f.read())
-        self.known_face_encodings = data["encodings"]
-        self.known_face_names = data["names"]
-
-        # Set authorized names
-        self.authorized_names = authorized_names or ["hardik", "kartik"]
-
-        # Make sure any running camera instances are fully released
-        self._release_all_cameras()
+        """
+        Initialize face recognition system
         
-        # Initialize the camera
-        self.picam2 = Picamera2()
-        self.picam2.configure(self.picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": (1920, 1080)}))
-        self.picam2.start()
-
-        # Scale factor for image processing (higher = faster but less accurate)
-        self.cv_scaler = 10
+        Args:
+            encodings_path: Path to pickled face encodings
+            authorized_names: List of authorized user names (None = all users)
+        """
+        self.encodings_path = encodings_path
+        self.authorized_names = authorized_names
+        self.picam2 = None
+        self.known_face_encodings = []
+        self.known_face_names = []
+        self.cv_scaler = 10  # Image downscale factor for faster processing
         
-    def _release_all_cameras(self):
-        """Force release all camera resources"""
-        import cv2
-        # Close all OpenCV windows
-        cv2.destroyAllWindows()
-        
-        # Try to release any existing Picamera2 instances
-        import subprocess
-        import time
-        
-        # Small delay to ensure resources are ready to be released
-        time.sleep(0.5)
-        
+        # Load encodings
+        self._load_encodings()
+    
+    def _load_encodings(self):
+        """Load pre-trained face encodings from file"""
         try:
-            # Find any running libcamera processes and terminate them
-            subprocess.run(['pkill', '-f', 'libcamera'], stderr=subprocess.DEVNULL)
-            time.sleep(1.0)  # Give time for the processes to terminate
+            # Get absolute path
+            if not os.path.isabs(self.encodings_path):
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                self.encodings_path = os.path.join(script_dir, self.encodings_path)
+            
+            print(f"[INFO] Loading encodings from: {self.encodings_path}")
+            
+            with open(self.encodings_path, "rb") as f:
+                data = pickle.loads(f.read())
+            
+            self.known_face_encodings = data["encodings"]
+            self.known_face_names = data["names"]
+            
+            print(f"[INFO] Loaded {len(self.known_face_encodings)} face encodings")
+            
+        except FileNotFoundError:
+            print(f"[WARNING] Encodings file not found: {self.encodings_path}")
+            print("[WARNING] Face recognition will return 'Unknown' for all faces")
         except Exception as e:
-            print(f"[INFO] Error while releasing cameras: {e}")
-
-    def process_frame(self, frame):
-        # Resize the frame for better performance
-        resized_frame = cv2.resize(frame, (0, 0), fx=(1/self.cv_scaler), fy=(1/self.cv_scaler))
+            print(f"[ERROR] Failed to load encodings: {e}")
+    
+    def _init_camera(self):
+        """Initialize camera"""
+        if self.picam2 is None:
+            # Release any existing camera instances
+            self._release_camera()
+            time.sleep(0.5)
+            
+            try:
+                self.picam2 = Picamera2()
+                self.picam2.configure(
+                    self.picam2.create_preview_configuration(
+                        main={"format": 'XRGB8888', "size": (1920, 1080)}
+                    )
+                )
+                self.picam2.start()
+                time.sleep(1)  # Camera warm-up
+                print("[INFO] Camera initialized")
+            except Exception as e:
+                print(f"[ERROR] Camera initialization failed: {e}")
+                raise
+    
+    def _release_camera(self):
+        """Release camera resources"""
+        try:
+            if self.picam2:
+                self.picam2.stop()
+                self.picam2.close()
+                self.picam2 = None
+            cv2.destroyAllWindows()
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[INFO] Error releasing camera: {e}")
+    
+    def _process_frame(self, frame):
+        """
+        Process a single frame to detect and recognize faces
+        
+        Args:
+            frame: BGR image from camera
+            
+        Returns:
+            Recognized name or "Unknown"
+        """
+        # Downscale for faster processing
+        resized_frame = cv2.resize(
+            frame, 
+            (0, 0), 
+            fx=(1/self.cv_scaler), 
+            fy=(1/self.cv_scaler)
+        )
         
         # Convert BGR to RGB
-        rgb_resized_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+        rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
         
-        # Detect faces and get encodings
-        face_locations = face_recognition.face_locations(rgb_resized_frame)
+        # Detect face locations
+        face_locations = face_recognition.face_locations(rgb_frame)
         
-        # Skip encoding if no faces found
         if not face_locations:
             return "Unknown"
-            
-        face_encodings = face_recognition.face_encodings(rgb_resized_frame, face_locations, model='large')
         
+        # Get face encodings
+        face_encodings = face_recognition.face_encodings(
+            rgb_frame, 
+            face_locations, 
+            model='large'
+        )
+        
+        # Compare with known faces
         for face_encoding in face_encodings:
-            # Compare with known faces
-            face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+            face_distances = face_recognition.face_distance(
+                self.known_face_encodings, 
+                face_encoding
+            )
+            
             if len(face_distances) > 0:
                 best_match_index = np.argmin(face_distances)
-                # Only accept matches below a certain distance threshold
+                
+                # Accept match if distance is below threshold
                 if face_distances[best_match_index] < 0.6:
                     name = self.known_face_names[best_match_index]
-                    if name in self.authorized_names:
+                    
+                    # Check if authorized (if list provided)
+                    if self.authorized_names is None or name in self.authorized_names:
                         return name
         
         return "Unknown"
-
-    def recognize_face(self, timeout=15):
-        """Recognize faces with timeout"""
-        start_time = time.time()
+    
+    def find_face(self, timeout=15, show_preview=False):
+        """
+        Detect and recognize faces with timeout
         
-        while time.time() - start_time < timeout:
-            # Capture and process frame
-            frame = self.picam2.capture_array()
-            name = self.process_frame(frame)
+        Args:
+            timeout: Maximum time to wait for face recognition (seconds)
+            show_preview: Show camera preview window (useful for debugging)
             
-            # Display the camera feed
-            cv2.putText(frame, f"Scanning... {name}", (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            cv2.imshow("Camera Feed", frame)
-            
-            # Check if recognized
-            if name != "Unknown":
-                return name
-                
-            # Check for keyboard interrupt
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-                
-        return "Unknown"  # Return Unknown if timeout occurs
-        
-    def __del__(self):
-        """Release resources"""
+        Returns:
+            Recognized name or "Unknown"
+        """
         try:
-            if hasattr(self, 'picam2'):
-                self.picam2.stop()
-                self.picam2.close()
-                del self.picam2
-            cv2.destroyAllWindows()
+            self._init_camera()
+            
+            start_time = time.time()
+            
+            while time.time() - start_time < timeout:
+                # Capture frame
+                frame = self.picam2.capture_array()
+                
+                # Process and recognize
+                name = self._process_frame(frame)
+                
+                # Show preview if requested
+                if show_preview:
+                    cv2.putText(
+                        frame, 
+                        f"Scanning... {name}", 
+                        (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 
+                        1, 
+                        (0, 255, 0), 
+                        2
+                    )
+                    cv2.imshow("Face Recognition", frame)
+                    
+                    # Allow early exit
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                
+                # Return immediately if recognized
+                if name != "Unknown":
+                    print(f"[INFO] Recognized: {name}")
+                    return name
+            
+            print("[INFO] No face recognized within timeout")
+            return "Unknown"
+            
         except Exception as e:
-            print(f"[INFO] Error during cleanup: {e}")
-
-class FaceRecognition:
-    def __init__(self, authorized_names=None):
-        self.authorized_names = authorized_names
-        self.face_recognizer = None
-    
-    def find_face(self):
-        """Public method to detect faces"""
-        # Create a new face recognizer instance for each recognition attempt
-        self.face_recognizer = FaceRecognizer(authorized_names=self.authorized_names)
-        try:
-            return self.face_recognizer.recognize_face()
-        finally:
-            # Ensure camera is properly released
-            if hasattr(self.face_recognizer, 'picam2'):
-                try:
-                    self.face_recognizer.picam2.stop()
-                    self.face_recognizer.picam2.close()
-                except:
-                    pass
-            cv2.destroyAllWindows()
+            print(f"[ERROR] Face recognition failed: {e}")
+            return "Unknown"
             
+        finally:
+            self._release_camera()
+    
     def release_camera(self):
-        """Release camera resources"""
-        if hasattr(self, 'face_recognizer') and hasattr(self.face_recognizer, 'picam2'):
-            self.face_recognizer.picam2.stop()
-            self.face_recognizer.picam2.close()
-            del self.face_recognizer.picam2
-        cv2.destroyAllWindows()
+        """Public method to release camera resources"""
+        self._release_camera()
     
     def __del__(self):
-        """Cleanup resources"""
-        # Ensure camera is properly released
-        if hasattr(self, 'face_recognizer') and hasattr(self.face_recognizer, 'picam2'):
-            try:
-                self.face_recognizer.picam2.stop()
-            except:
-                pass
-        cv2.destroyAllWindows()
+        """Cleanup on deletion"""
+        self._release_camera()
 
-# Example usage
+
+# Backward compatibility class (deprecated)
+class FaceRecognizer(FaceRecognition):
+    """Legacy class name - use FaceRecognition instead"""
+    
+    def recognize_face(self, timeout=15):
+        """Legacy method - use find_face() instead"""
+        return self.find_face(timeout=timeout, show_preview=True)
+
+
 if __name__ == "__main__":
+    # Example usage
     recognizer = FaceRecognition()
-    name = recognizer.find_face()
+    name = recognizer.find_face(show_preview=True)
     print(f"Detected: {name}")
+

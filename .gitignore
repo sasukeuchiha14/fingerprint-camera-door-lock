@@ -1,18 +1,114 @@
-# Environment variables
+# =========================================
+# CRITICAL: NEVER COMMIT THESE FILES!
+# =========================================
+
+# Environment variables - Contains sensitive credentials
 *.env
+.env
+.env.local
+.env.*.local
 
-# face_recognition_folder
-dataset/
-.lgd-nfy0
-encodings.pickle
-
-# VS Code
+# =========================================
+# PYTHON
+# =========================================
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# =========================================
+# FACE RECOGNITION DATA
+# =========================================
+dataset/
+**/dataset/
+encodings.pickle
+**/encodings.pickle
+*.pkl
+*.pt
+*.pth
+*.backup
+trained_model.*
+face_model.*
+
+# =========================================
+# RASPBERRY PI SPECIFIC
+# =========================================
+.lgd-nfy0
+*.lgd-nfy0
+
+# =========================================
+# IDEs & EDITORS
+# =========================================
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# OS files
-Thumbs.db
+# =========================================
+# OS FILES
+# =========================================
 .DS_Store
+Thumbs.db
+Desktop.ini
 
+# =========================================
+# LOGS & TEMPORARY FILES
+# =========================================
+*.log
+logs/
+*.out
+*.tmp
+*.temp
+.cache/
+
+# =========================================
+# BACKUP FILES
+# =========================================
+*.bak
+*.backup
+*.old
+
+# =========================================
+# SECRETS & CREDENTIALS
+# =========================================
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+*.sql.backup
+
+# =========================================
+# ADDITIONAL
+# =========================================
 pi_assets/
 documents/
+node_modules/
+.pm2/
+.ipynb_checkpoints/
+.coverage
+htmlcov/

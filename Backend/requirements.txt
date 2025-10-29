@@ -1,0 +1,24 @@
+# Backend Server Requirements (VPS)
+# Install with: pip install -r requirements.txt
+
+# Web framework
+Flask
+Flask-CORS
+
+# Database
+supabase
+
+# Face recognition
+face-recognition
+opencv-python
+numpy
+Pillow
+dlib
+
+# Utilities
+python-dotenv
+requests
+python-telegram-bot
+
+# Security
+werkzeug

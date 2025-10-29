@@ -1,0 +1,7 @@
+# Telegram Bot Requirements
+# Install with: pip install -r requirements.txt
+
+python-telegram-bot
+python-dotenv
+supabase
+requests
