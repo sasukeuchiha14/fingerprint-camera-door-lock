@@ -63,6 +63,10 @@ class ImageCapture:
             # Capture frame
             frame = self.picam2.capture_array()
             
+            if frame is None or frame.size == 0:
+                print("[ERROR] Failed to capture frame from camera")
+                return None
+            
             # Generate filename
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             if image_number is not None:
@@ -72,10 +76,32 @@ class ImageCapture:
             
             filepath = os.path.join(folder, filename)
             
-            # Save image
-            cv2.imwrite(filepath, frame)
-            print(f"[INFO] Image saved: {filepath}")
+            # Convert frame format if needed (picamera2 sometimes returns RGB, cv2 expects BGR)
+            if len(frame.shape) == 3 and frame.shape[2] == 3:
+                # Convert RGB to BGR for cv2
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:
+                frame_bgr = frame
             
+            # Save image
+            success = cv2.imwrite(filepath, frame_bgr)
+            
+            if not success:
+                print(f"[ERROR] Failed to save image to {filepath}")
+                return None
+                
+            # Verify file was actually created and has content
+            if not os.path.exists(filepath):
+                print(f"[ERROR] Image file was not created: {filepath}")
+                return None
+                
+            file_size = os.path.getsize(filepath)
+            if file_size == 0:
+                print(f"[ERROR] Image file is empty: {filepath}")
+                os.remove(filepath)  # Remove empty file
+                return None
+                
+            print(f"[INFO] Image saved successfully: {filepath} ({file_size} bytes)")
             return filepath
             
         except Exception as e:

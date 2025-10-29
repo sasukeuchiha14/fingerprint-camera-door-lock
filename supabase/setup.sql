@@ -326,5 +326,106 @@ GROUP BY u.user_id, u.name, u.email, u.fingerprint_id, u.is_active, u.created_at
 --     ('Test User', 'test@example.com', '+919876543210', 2, '5678');
 
 -- =========================================
+-- CONSTRAINTS AND VALIDATION
+-- =========================================
+
+-- Add PIN validation constraint
+CREATE OR REPLACE FUNCTION validate_pin_code(pin TEXT)
+RETURNS BOOLEAN AS $$
+BEGIN
+    -- PIN must be exactly 4 digits
+    RETURN pin ~ '^\d{4}$';
+END;
+$$ LANGUAGE plpgsql;
+
+ALTER TABLE users ADD CONSTRAINT check_pin_format 
+    CHECK (validate_pin_code(pin_code));
+
+-- Add fingerprint ID range constraint (0-127 for R307 sensor)
+ALTER TABLE users ADD CONSTRAINT check_fingerprint_id_range 
+    CHECK (fingerprint_id >= 0 AND fingerprint_id <= 127);
+
+-- Add trigger to update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_users_updated_at
+    BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- =========================================
+-- UTILITY FUNCTIONS
+-- =========================================
+
+-- Function to get next available fingerprint slot
+CREATE OR REPLACE FUNCTION get_next_fingerprint_slot()
+RETURNS INTEGER AS $$
+DECLARE
+    next_slot INTEGER;
+BEGIN
+    -- Find the first available slot from 1-127
+    SELECT COALESCE(MIN(slot_num), 1) INTO next_slot
+    FROM (
+        SELECT generate_series(1, 127) AS slot_num
+        EXCEPT
+        SELECT fingerprint_id FROM users WHERE fingerprint_id IS NOT NULL
+    ) available_slots;
+    
+    RETURN next_slot;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to get user images count
+CREATE OR REPLACE FUNCTION get_user_images_count(p_user_id UUID)
+RETURNS INTEGER AS $$
+DECLARE
+    image_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO image_count 
+    FROM face_images 
+    WHERE user_id = p_user_id;
+    
+    RETURN COALESCE(image_count, 0);
+END;
+$$ LANGUAGE plpgsql;
+
+-- =========================================
+-- STORAGE BUCKET SETUP INSTRUCTIONS
+-- =========================================
+
+/*
+CRITICAL: You MUST create a storage bucket in Supabase for face images:
+
+1. Go to your Supabase project dashboard
+2. Navigate to Storage
+3. Create a new bucket named "face-images"
+4. Set bucket permissions as follows:
+
+Bucket Configuration:
+- Bucket name: face-images
+- Public: Yes (or configure RLS policies)
+- File size limit: 10MB
+- Allowed MIME types: image/jpeg, image/png
+
+Required Storage Policies:
+CREATE POLICY "Allow public read access" ON storage.objects 
+FOR SELECT USING (bucket_id = 'face-images');
+
+CREATE POLICY "Allow authenticated uploads" ON storage.objects 
+FOR INSERT WITH CHECK (bucket_id = 'face-images' AND auth.role() = 'authenticated');
+
+CREATE POLICY "Allow authenticated deletes" ON storage.objects 
+FOR DELETE USING (bucket_id = 'face-images' AND auth.role() = 'authenticated');
+
+Without this bucket, image uploads will fail!
+*/
+
+-- =========================================
 -- END OF SETUP
 -- =========================================

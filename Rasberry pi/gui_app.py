@@ -39,8 +39,8 @@ BACKEND_URL = os.getenv("BACKEND_URL", "https://oracle-apis.hardikgarg.me/doorlo
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "YourDoorLockBot")
 
 # Screen settings
-SCREEN_WIDTH = 800
-SCREEN_HEIGHT = 480
+SCREEN_WIDTH = 1024
+SCREEN_HEIGHT = 600
 FPS = 30
 
 # Colors
@@ -109,6 +109,15 @@ def draw_input_field(x, y, width, height, text, active=False):
     
     if text:
         draw_text(text, font_medium, COLOR_TEXT, x + 10, y + 10)
+    
+    # Draw blinking cursor if field is active
+    if active:
+        cursor_visible = (pygame.time.get_ticks() // 500) % 2  # Blink every 500ms
+        if cursor_visible:
+            text_width = font_medium.size(text)[0] if text else 0
+            cursor_x = x + 10 + text_width
+            cursor_y = y + 10
+            pygame.draw.line(screen, COLOR_TEXT, (cursor_x, cursor_y), (cursor_x, cursor_y + 25), 2)
     
     return rect
 
@@ -184,13 +193,24 @@ def create_user_api(name, email, phone, pin_code, fingerprint_id):
             "fingerprint_id": fingerprint_id
         }
         
+        print(f"[INFO] Creating user with data: {data}")
         response = requests.post(f"{BACKEND_URL}/api/add-user", json=data, timeout=10)
         
-        if response.status_code == 200:
-            return True, response.json()
+        print(f"[INFO] User creation response status: {response.status_code}")
+        print(f"[INFO] User creation response text: {response.text}")
+        
+        if response.status_code in [200, 201]:  # Accept both 200 OK and 201 Created
+            result = response.json()
+            if 'user' in result:
+                return True, result['user']  # Return the user object directly
+            else:
+                return True, result  # Fallback if structure is different
         else:
-            return False, response.json().get('error', 'Unknown error')
+            error_msg = response.json().get('error', f'HTTP {response.status_code}')
+            print(f"[ERROR] User creation failed: {error_msg}")
+            return False, error_msg
     except Exception as e:
+        print(f"[ERROR] User creation exception: {e}")
         return False, str(e)
 
 
@@ -251,10 +271,21 @@ def log_access(user_id=None, access_type="success", method="gui", notes=None):
 def upload_face_image(user_id, image_path):
     """Upload face image to backend"""
     try:
+        # Check if image file exists
+        if not os.path.exists(image_path):
+            print(f"[ERROR] Image file does not exist: {image_path}")
+            return False
+        
+        file_size = os.path.getsize(image_path)
+        print(f"[INFO] Uploading image: {image_path} ({file_size} bytes)")
+        print(f"[INFO] User ID: {user_id}")
+        print(f"[INFO] Backend URL: {BACKEND_URL}/api/upload-face-image")
+        
         with open(image_path, 'rb') as f:
-            files = {'file': f}
+            files = {'image': f}  # Fixed: backend expects 'image', not 'file'
             data = {'user_id': user_id}
             
+            print(f"[INFO] Sending POST request...")
             response = requests.post(
                 f"{BACKEND_URL}/api/upload-face-image",
                 files=files,
@@ -262,9 +293,28 @@ def upload_face_image(user_id, image_path):
                 timeout=30
             )
             
-            return response.status_code == 200
+            print(f"[INFO] Upload response status: {response.status_code}")
+            print(f"[INFO] Upload response headers: {dict(response.headers)}")
+            print(f"[INFO] Upload response text: {response.text}")
+            
+            if response.status_code == 200 or response.status_code == 201:
+                print(f"[SUCCESS] Image uploaded successfully: {image_path}")
+                return True
+            else:
+                print(f"[ERROR] Upload failed with status {response.status_code}")
+                print(f"[ERROR] Response body: {response.text}")
+                return False
+                
+    except requests.exceptions.Timeout:
+        print(f"[ERROR] Upload timeout for {image_path}")
+        return False
+    except requests.exceptions.ConnectionError:
+        print(f"[ERROR] Connection error uploading {image_path}")
+        return False
     except Exception as e:
-        print(f"Upload failed: {e}")
+        print(f"[ERROR] Upload failed with exception: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -405,8 +455,10 @@ class UnlockDoor:
                     num = action.split('_')[1]
                     if len(self.pin) < 4:
                         self.pin += num
+                    # Don't return, just continue to update display
                 elif action == 'clear':
                     self.pin = ""
+                    # Don't return, just continue to update display
                 elif action == 'enter' and len(self.pin) == 4:
                     return 'verify_pin'
         return None
@@ -472,7 +524,7 @@ class CreateUser:
     """Create new user screen"""
     
     def __init__(self):
-        self.step = "details"  # details -> fingerprint -> face -> complete
+        self._step = "details"  # details -> fingerprint -> face -> complete
         self.name = ""
         self.email = ""
         self.phone = ""
@@ -480,13 +532,29 @@ class CreateUser:
         self.fingerprint_id = None
         self.user_id = None
         self.face_images_captured = 0
+        self.captured_image_paths = []  # Store paths of captured images
         self.active_field = "name"
         self.buttons = {}
-        self.keyboard_visible = False
-        self.keyboard_text = ""
+        self.camera = None
+        self.camera_surface = None
+    
+    @property
+    def step(self):
+        return self._step
+    
+    @step.setter
+    def step(self, value):
+        if self._step != value:
+            print(f"[DEBUG] STEP CHANGED: '{self._step}' -> '{value}'")
+            import traceback
+            traceback.print_stack()
+        self._step = value
     
     def draw(self):
         screen.fill(COLOR_BG)
+        
+        # Clear buttons from previous screen
+        self.buttons = {}
         
         # Title
         draw_text("Create New User", font_title, COLOR_PRIMARY, SCREEN_WIDTH // 2, 40, center=True)
@@ -500,7 +568,7 @@ class CreateUser:
         elif self.step == "complete":
             self.draw_completion()
         
-        # Back button
+        # Back button (added after specific screen buttons)
         self.buttons['back'] = draw_button("Back", 20, SCREEN_HEIGHT - 70, 150, 50, COLOR_GRAY, COLOR_TEXT)
     
     def draw_details_form(self):
@@ -536,33 +604,9 @@ class CreateUser:
         y += spacing + 20
         self.buttons['next'] = draw_button("Next", SCREEN_WIDTH // 2 - 100, y, 200, 60, COLOR_SUCCESS)
         
-        # Simple keyboard for touch input
-        if self.keyboard_visible:
-            self.draw_simple_keyboard()
-    
-    def draw_simple_keyboard(self):
-        """Draw a simple on-screen keyboard"""
-        keys = [
-            ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
-            ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
-            ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', '@'],
-            ['Z', 'X', 'C', 'V', 'B', 'N', 'M', '.', 'DEL', 'SPC']
-        ]
-        
-        key_width = 70
-        key_height = 50
-        start_x = 20
-        start_y = SCREEN_HEIGHT - 250
-        spacing = 5
-        
-        for row_idx, row in enumerate(keys):
-            for col_idx, key in enumerate(row):
-                x = start_x + col_idx * (key_width + spacing)
-                y = start_y + row_idx * (key_height + spacing)
-                
-                self.buttons[f'key_{key}'] = draw_button(
-                    key, x, y, key_width, key_height, COLOR_PRIMARY, font=font_small
-                )
+        # Hint for keyboard input
+        draw_text("Click field to select, then type with keyboard", font_small, COLOR_DARK_GRAY, 
+                 SCREEN_WIDTH // 2, SCREEN_HEIGHT - 30, center=True)
     
     def draw_fingerprint_enroll(self):
         """Draw fingerprint enrollment screen"""
@@ -575,22 +619,70 @@ class CreateUser:
         )
     
     def draw_face_capture(self):
-        """Draw face capture screen"""
-        draw_text("Face Capture", font_large, COLOR_TEXT, SCREEN_WIDTH // 2, 120, center=True)
+        """Draw face capture screen with live camera feed"""
+        draw_text("Face Capture", font_large, COLOR_TEXT, SCREEN_WIDTH // 2, 30, center=True)
         draw_text(f"Images captured: {self.face_images_captured}/5", font_medium, COLOR_TEXT, 
-                 SCREEN_WIDTH // 2, 180, center=True)
-        draw_text("Position face in front of camera", font_medium, COLOR_DARK_GRAY, 
-                 SCREEN_WIDTH // 2, 220, center=True)
+                 SCREEN_WIDTH // 2, 70, center=True)
+        
+        # Initialize camera if not already done
+        if self.camera is None and ImageCapture:
+            try:
+                import cv2
+                from picamera2 import Picamera2
+                self.camera = Picamera2()
+                config = self.camera.create_preview_configuration(main={"size": (640, 480)})
+                self.camera.configure(config)
+                self.camera.start()
+                time.sleep(0.5)  # Let camera warm up
+            except Exception as e:
+                print(f"Camera init error: {e}")
+                self.camera = None
+        
+        # Show live camera feed
+        if self.camera:
+            try:
+                import cv2
+                import numpy as np
+                
+                # Capture frame
+                frame = self.camera.capture_array()
+                
+                # Convert from RGB to BGR for OpenCV
+                if len(frame.shape) == 3 and frame.shape[2] == 3:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                
+                # Resize to fit screen (keeping aspect ratio)
+                display_height = 280
+                aspect_ratio = frame.shape[1] / frame.shape[0]
+                display_width = int(display_height * aspect_ratio)
+                frame_resized = cv2.resize(frame, (display_width, display_height))
+                
+                # Convert to pygame surface
+                frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                frame_surface = pygame.surfarray.make_surface(np.transpose(frame_rgb, (1, 0, 2)))
+                
+                # Display on screen
+                x_pos = (SCREEN_WIDTH - display_width) // 2
+                screen.blit(frame_surface, (x_pos, 110))
+                
+            except Exception as e:
+                print(f"Camera feed error: {e}")
+                draw_text("Camera feed unavailable", font_medium, COLOR_ERROR, 
+                         SCREEN_WIDTH // 2, 200, center=True)
+        else:
+            # No camera - show placeholder
+            pygame.draw.rect(screen, COLOR_DARK_GRAY, (160, 110, 480, 280), border_radius=10)
+            draw_text("Camera Preview", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 250, center=True)
         
         # Capture button
         self.buttons['capture_face'] = draw_button(
-            "Capture Image", SCREEN_WIDTH // 2 - 150, 270, 300, 70, COLOR_PRIMARY
+            "Capture Image", SCREEN_WIDTH // 2 - 150, 400, 300, 60, COLOR_PRIMARY
         )
         
         if self.face_images_captured >= 5:
             # Complete button
             self.buttons['complete_face'] = draw_button(
-                "Complete & Train Model", SCREEN_WIDTH // 2 - 180, 360, 360, 70, COLOR_SUCCESS
+                "Complete & Train Model", SCREEN_WIDTH // 2 - 180, SCREEN_HEIGHT - 120, 360, 60, COLOR_SUCCESS
             )
     
     def draw_completion(self):
@@ -606,17 +698,18 @@ class CreateUser:
         )
     
     def handle_click(self, pos):
+        print(f"[DEBUG] handle_click called with pos: {pos}")
         for action, rect in self.buttons.items():
             if rect.collidepoint(pos):
+                print(f"[DEBUG] Button clicked: action='{action}', step='{self.step}'")
                 if action == 'back':
                     return 'back'
                 elif action == 'done':
                     return 'back'
                 elif action in ['name', 'email', 'phone', 'pin']:
                     self.active_field = action
-                    self.keyboard_visible = True
                 elif action == 'next':
-                    if self.validate_details():
+                    if self.step == "details" and self.validate_details():
                         self.step = "fingerprint"
                     else:
                         return 'invalid_details'
@@ -626,13 +719,20 @@ class CreateUser:
                     return 'capture_face'
                 elif action == 'complete_face':
                     return 'complete_face'
-                elif action.startswith('key_'):
-                    key = action.split('_')[1]
-                    self.handle_keyboard_input(key)
         return None
     
-    def handle_keyboard_input(self, key):
-        """Handle keyboard input"""
+    def handle_keyboard_event(self, event):
+        """Handle keyboard input from external keyboard"""
+        if event.type != pygame.KEYDOWN:
+            return
+        
+        # SAFETY: Only handle keyboard events when on details step
+        if self.step != "details":
+            print(f"[DEBUG] handle_keyboard_event called but step is '{self.step}', not 'details' - ignoring")
+            return
+        
+        print(f"[DEBUG] Processing keyboard event in handle_keyboard_event. Key: {event.key}")
+        
         field_map = {
             'name': 'name',
             'email': 'email',
@@ -640,16 +740,33 @@ class CreateUser:
             'pin': 'pin'
         }
         
+        if self.active_field not in field_map:
+            return
+        
         current_value = getattr(self, field_map[self.active_field])
         
-        if key == 'DEL':
+        if event.key == pygame.K_BACKSPACE:
             setattr(self, field_map[self.active_field], current_value[:-1])
-        elif key == 'SPC':
-            setattr(self, field_map[self.active_field], current_value + ' ')
-        elif self.active_field == 'pin' and len(current_value) < 4 and key.isdigit():
-            setattr(self, field_map[self.active_field], current_value + key)
-        elif self.active_field != 'pin':
-            setattr(self, field_map[self.active_field], current_value + key.lower())
+        elif event.key == pygame.K_TAB:
+            # Cycle through fields
+            fields = ['name', 'email', 'phone', 'pin']
+            current_idx = fields.index(self.active_field)
+            self.active_field = fields[(current_idx + 1) % len(fields)]
+        elif event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
+            # Try to go to next step
+            if self.validate_details():
+                print(f"[DEBUG] Enter pressed - changing step from '{self.step}' to 'fingerprint'")
+                self.step = "fingerprint"
+        else:
+            # Handle character input
+            if self.active_field == 'pin':
+                # Only allow digits for PIN, max 4 chars
+                if event.unicode.isdigit() and len(current_value) < 4:
+                    setattr(self, field_map[self.active_field], current_value + event.unicode)
+            else:
+                # Allow alphanumeric and common symbols for other fields
+                if event.unicode.isprintable():
+                    setattr(self, field_map[self.active_field], current_value + event.unicode)
     
     def validate_details(self):
         """Validate user details"""
@@ -659,66 +776,233 @@ class CreateUser:
     
     def enroll_fingerprint(self):
         """Enroll fingerprint"""
+        print(f"[INFO] Starting fingerprint enrollment for user: {self.name}")
+        show_message("Enrolling fingerprint...\nPlace finger on sensor", "info", 2000)
+        
         if FingerprintSensor:
             try:
-                # This would call the actual fingerprint enrollment
-                # For now, we'll use a placeholder
+                fp_sensor = FingerprintSensor()
+                
+                # Enroll new fingerprint
                 show_message("Place finger on sensor...", "info", 2000)
-                # In real implementation: fingerprint_sensor.enroll()
-                self.fingerprint_id = random.randint(1, 127)  # Demo
-                self.step = "face"
-                return True
+                result = fp_sensor.enroll_fingerprint()
+                
+                if result:
+                    self.fingerprint_id = fp_sensor.finger.finger_id
+                    print(f"[INFO] Fingerprint enrolled successfully! ID: {self.fingerprint_id}")
+                    show_message(f"Fingerprint enrolled!\nID: {self.fingerprint_id}", "success", 2000)
+                    self.step = "face"
+                    print(f"[INFO] Moving to face capture step")
+                    return True
+                else:
+                    print("[ERROR] Fingerprint enrollment failed")
+                    show_message("Fingerprint enrollment failed", "error", 2000)
+                    return False
             except Exception as e:
-                show_message(f"Error: {str(e)}", "error")
+                print(f"[ERROR] Fingerprint enrollment exception: {e}")
+                show_message(f"Error: {str(e)}", "error", 2000)
                 return False
         else:
-            self.fingerprint_id = random.randint(1, 127)  # Demo mode
+            # Demo mode
+            self.fingerprint_id = random.randint(1, 127)
+            print(f"[INFO] Demo mode: Fingerprint ID {self.fingerprint_id}")
+            show_message(f"Demo: Fingerprint ID {self.fingerprint_id}", "success", 2000)
             self.step = "face"
             return True
     
     def capture_face_image(self):
         """Capture face image"""
+        print(f"[DEBUG] capture_face_image() called. Current step: {self.step}")
+        
         if ImageCapture:
             try:
-                # Use ImageCapture class
-                capturer = ImageCapture()
+                # Completely close preview camera to allow ImageCapture to use the camera
+                if self.camera:
+                    try:
+                        self.camera.stop()
+                        self.camera.close()
+                    except:
+                        pass
+                    self.camera = None
+                    time.sleep(0.5)  # Give camera time to fully release
+                
+                # Use ImageCapture class to capture and save image
+                # Ensure we use the correct dataset path relative to this script
+                dataset_path = os.path.join(os.path.dirname(__file__), "face_recognition_folder", "dataset")
+                capturer = ImageCapture(dataset_folder=dataset_path)
                 image_path = capturer.capture_single_image(self.name, self.face_images_captured + 1)
                 
                 if image_path:
                     self.face_images_captured += 1
+                    self.captured_image_paths.append(image_path)
+                    print(f"[INFO] Captured image {self.face_images_captured}/5: {image_path}")
+                    show_message(f"Image {self.face_images_captured}/5 captured!", "success", 1500)
+                    
+                    # Reinitialize preview camera for next capture (only if we haven't captured all 5)
+                    if self.face_images_captured < 5:
+                        try:
+                            import cv2
+                            from picamera2 import Picamera2
+                            self.camera = Picamera2()
+                            config = self.camera.create_preview_configuration(main={"size": (640, 480)})
+                            self.camera.configure(config)
+                            self.camera.start()
+                            time.sleep(0.5)  # Let camera warm up
+                            print("[INFO] Preview camera reinitialized")
+                        except Exception as cam_err:
+                            print(f"[WARNING] Camera reinit error: {cam_err}")
+                            # Don't set camera to None - keep it as is, we'll try again on next capture
+                    
+                    print(f"[DEBUG] capture_face_image() returning True. Step: {self.step}")
                     return True
                 else:
+                    show_message("Failed to capture image", "error", 2000)
+                    # Try to reinitialize preview camera even after failure
+                    if self.camera is None:
+                        try:
+                            import cv2
+                            from picamera2 import Picamera2
+                            self.camera = Picamera2()
+                            config = self.camera.create_preview_configuration(main={"size": (640, 480)})
+                            self.camera.configure(config)
+                            self.camera.start()
+                            time.sleep(0.5)
+                        except:
+                            pass
+                    print(f"[DEBUG] capture_face_image() returning False. Step: {self.step}")
                     return False
+                    
             except Exception as e:
-                show_message(f"Error: {str(e)}", "error")
+                show_message(f"Error: {str(e)}", "error", 2000)
+                print(f"[ERROR] Capture error: {e}")
+                # Try to reinitialize preview camera even after error
+                if self.camera is None:
+                    try:
+                        import cv2
+                        from picamera2 import Picamera2
+                        self.camera = Picamera2()
+                        config = self.camera.create_preview_configuration(main={"size": (640, 480)})
+                        self.camera.configure(config)
+                        self.camera.start()
+                        time.sleep(0.5)
+                    except:
+                        pass
+                print(f"[DEBUG] capture_face_image() returning False (exception). Step: {self.step}")
                 return False
         else:
-            self.face_images_captured += 1  # Demo mode
+            # Demo mode
+            self.face_images_captured += 1
+            self.captured_image_paths.append(f"/tmp/demo_{self.name}_{self.face_images_captured}.jpg")
+            show_message(f"Demo: Image {self.face_images_captured}/5 captured", "success", 1500)
+            print(f"[DEBUG] capture_face_image() returning True (demo). Step: {self.step}")
             return True
+    
+    def cleanup_camera(self):
+        """Cleanup camera resources"""
+        if self.camera:
+            try:
+                self.camera.stop()
+                self.camera.close()
+            except:
+                pass
+            self.camera = None
     
     def complete_registration(self):
         """Complete user registration"""
+        # Cleanup camera
+        self.cleanup_camera()
+        
         # Create user in database
+        show_message("Creating user in database...", "info", 2000)
         success, result = create_user_api(
             self.name, self.email, self.phone, self.pin, self.fingerprint_id
         )
         
         if not success:
-            show_message(f"Error: {result}", "error")
+            show_message(f"Error: {result}", "error", 3000)
             return False
         
         self.user_id = result.get('user_id')
+        print(f"[INFO] User created with ID: {self.user_id}")
         
-        # Upload face images (in real implementation)
-        # for i in range(self.face_images_captured):
-        #     upload_face_image(self.user_id, f"/tmp/face_{i}.jpg")
+        # Upload face images to backend
+        uploaded_successfully = []
+        if len(self.captured_image_paths) > 0:
+            print(f"[INFO] Starting upload of {len(self.captured_image_paths)} images...")
+            print(f"[INFO] Image paths: {self.captured_image_paths}")
+            show_message(f"Uploading {len(self.captured_image_paths)} face images...", "info", 2000)
+            upload_count = 0
+            for i, image_path in enumerate(self.captured_image_paths):
+                print(f"[INFO] Uploading image {i+1}/{len(self.captured_image_paths)}: {image_path}")
+                # Check if file exists before uploading
+                if not os.path.exists(image_path):
+                    print(f"[ERROR] Image file not found: {image_path}")
+                    continue
+                    
+                print(f"[INFO] File exists, size: {os.path.getsize(image_path)} bytes")
+                if upload_face_image(self.user_id, image_path):
+                    upload_count += 1
+                    uploaded_successfully.append(image_path)
+                    print(f"[SUCCESS] Successfully uploaded: {image_path}")
+                    show_message(f"Uploaded {upload_count}/{len(self.captured_image_paths)} images", "info", 1000)
+                else:
+                    print(f"[ERROR] Failed to upload: {image_path}")
+                    show_message(f"Upload failed for image {i+1}", "error", 2000)
+            
+            print(f"[INFO] Upload complete: {upload_count}/{len(self.captured_image_paths)} images uploaded successfully")
+            
+            if upload_count == 0:
+                show_message("Error: No images uploaded successfully", "error", 3000)
+                print("[ERROR] Registration failed: No images uploaded")
+                return False
+            elif upload_count < len(self.captured_image_paths):
+                show_message(f"Warning: Only {upload_count}/{len(self.captured_image_paths)} images uploaded", "warning", 2000)
+                print(f"[WARNING] Partial upload: {upload_count}/{len(self.captured_image_paths)} images")
+        else:
+            print("[ERROR] No captured image paths found!")
+            show_message("Error: No face images captured", "error", 3000)
+            return False
         
         # Trigger model retrain
         show_message("Training face recognition model...", "info", 3000)
-        trigger_model_retrain()
+        retrain_success = trigger_model_retrain()
+        
+        if retrain_success:
+            show_message("Model trained successfully!", "success", 2000)
+            print("[INFO] Model training completed")
+        else:
+            show_message("Warning: Model training may have failed", "warning", 2000)
+        
+        # Clean up local image files after successful upload and registration
+        self.cleanup_local_images()
         
         self.step = "complete"
         return True
+    
+    def cleanup_local_images(self):
+        """Delete local image files after successful upload"""
+        try:
+            for image_path in self.captured_image_paths:
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+                    print(f"[INFO] Deleted local image: {image_path}")
+                else:
+                    print(f"[WARNING] Local image already removed: {image_path}")
+            
+            # Also try to remove the user's folder if it's empty
+            if self.captured_image_paths:
+                user_folder = os.path.dirname(self.captured_image_paths[0])
+                try:
+                    if os.path.exists(user_folder) and not os.listdir(user_folder):
+                        os.rmdir(user_folder)
+                        print(f"[INFO] Removed empty user folder: {user_folder}")
+                except OSError:
+                    # Folder not empty, that's fine
+                    pass
+                    
+        except Exception as e:
+            print(f"[WARNING] Error during image cleanup: {e}")
+            # Don't fail the registration for cleanup errors
 
 
 class LinkTelegram:
@@ -841,8 +1125,10 @@ class LinkTelegram:
                     num = action.split('_')[1]
                     if len(self.entered_pin) < 4:
                         self.entered_pin += num
+                    # Don't return, just continue to update display
                 elif action == 'clear':
                     self.entered_pin = ""
+                    # Don't return, just continue to update display
                 elif action == 'verify' and len(self.entered_pin) == 4:
                     return 'verify_pin'
         return None
@@ -889,6 +1175,16 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
             
+            elif event.type == pygame.KEYDOWN:
+                # Handle keyboard input for CreateUser screen
+                if current_screen == "create_user":
+                    screen_obj = screens[current_screen]
+                    print(f"[DEBUG] KEYDOWN event received. Key: {event.key}, Current step: {screen_obj.step}")
+                    if screen_obj.step == "details":
+                        screen_obj.handle_keyboard_event(event)
+                    else:
+                        print(f"[DEBUG] Ignoring key press - not on details step")
+            
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 pos = pygame.mouse.get_pos()
                 screen_obj = screens[current_screen]
@@ -896,6 +1192,10 @@ def main():
                 
                 # Handle actions
                 if action == 'back':
+                    # Cleanup camera if leaving create_user screen
+                    if current_screen == "create_user":
+                        screen_obj.cleanup_camera()
+                    
                     current_screen = "main_menu"
                     # Reset screens
                     screens["unlock"] = UnlockDoor()
@@ -920,15 +1220,24 @@ def main():
                         screens["unlock"] = UnlockDoor()
                 
                 elif action == 'enroll_fingerprint' and current_screen == "create_user":
-                    screen_obj.enroll_fingerprint()
+                    print(f"[INFO] Fingerprint enrollment action triggered. Current step: {screen_obj.step}")
+                    if screen_obj.enroll_fingerprint():
+                        # Successfully enrolled, moved to face step
+                        print(f"[INFO] Fingerprint enrolled successfully. New step: {screen_obj.step}")
+                    else:
+                        print(f"[WARNING] Fingerprint enrollment failed. Current step: {screen_obj.step}")
                 
                 elif action == 'capture_face' and current_screen == "create_user":
+                    print(f"[INFO] Capture face action triggered. Images captured so far: {screen_obj.face_images_captured}/5")
                     screen_obj.capture_face_image()
+                    print(f"[INFO] After capture. Images captured: {screen_obj.face_images_captured}/5, Step: {screen_obj.step}")
                 
                 elif action == 'complete_face' and current_screen == "create_user":
+                    print(f"[INFO] Complete registration triggered. Images: {screen_obj.face_images_captured}, Paths: {len(screen_obj.captured_image_paths)}")
                     show_message("Creating user and training model...", "info", 2000)
                     if screen_obj.complete_registration():
                         show_message("User created successfully!", "success", 2000)
+                        print("[INFO] Registration completed successfully")
                 
                 elif action == 'generate_pin' and current_screen == "link_telegram":
                     screen_obj.generate_temp_pin()
@@ -938,12 +1247,16 @@ def main():
                         show_message("Telegram linked successfully!", "success", 2000)
                 
                 elif action == 'invalid_details':
-                    show_message("Please fill all required fields correctly", "error")
+                    show_message("Please fill all required fields correctly", "error", 2000)
         
         # Draw current screen
         screens[current_screen].draw()
         pygame.display.flip()
         clock.tick(FPS)
+    
+    # Cleanup before exit
+    if current_screen == "create_user":
+        screens[current_screen].cleanup_camera()
     
     pygame.quit()
     sys.exit()

@@ -1,7 +1,0 @@
-Supabase API calls (for door/user data)
-
-Raspberry Pi communication (for live door status)
-
-Notifications (e.g., “Someone tried to unlock the door!”)
-
-Logging system (save to cloud)

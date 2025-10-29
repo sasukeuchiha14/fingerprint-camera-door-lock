@@ -2,7 +2,7 @@
 # Install with: pip install -r requirements.txt
 
 # Hardware interfaces
-adafruit-fingerprint
+adafruit-circuitpython-fingerprint
 picamera2
 gpiozero
 RPi.GPIO
