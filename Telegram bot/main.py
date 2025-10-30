@@ -43,6 +43,40 @@ def is_admin(user_id: int) -> bool:
     return str(user_id) in ADMIN_CHAT_IDS
 
 
+async def delete_pin_message(context: ContextTypes.DEFAULT_TYPE):
+    """Delete PIN message and invalidate PIN after 10 minutes"""
+    job_data = context.job.data
+    chat_id = job_data['chat_id']
+    message_id = job_data['message_id']
+    temp_pin = job_data['temp_pin']
+    
+    try:
+        # Delete the message from Telegram
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.info(f"Deleted PIN message {message_id} for chat {chat_id}")
+        
+        # Invalidate the PIN on backend by calling cleanup endpoint
+        try:
+            requests.post(
+                f"{BACKEND_URL}/api/invalidate-telegram-pin",
+                json={"temp_pin": temp_pin},
+                timeout=5
+            )
+            logger.info(f"Invalidated temp PIN: {temp_pin}")
+        except Exception as e:
+            logger.error(f"Failed to invalidate PIN on backend: {e}")
+        
+        # Send notification that PIN expired
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⏱️ Your Telegram registration PIN has expired. Use /register to generate a new one.",
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error deleting PIN message: {e}")
+
+
 def format_timestamp(timestamp_str: str) -> str:
     """Format timestamp for display"""
     try:
@@ -146,19 +180,31 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         msg = (
-            "🔑 <b>Registration PIN</b>\n\n"
+            "🔑 <b>Telegram Registration PIN</b>\n\n"
             f"Your PIN: <code>{temp_pin}</code>\n\n"
             "📱 <b>Next Steps:</b>\n"
             "1. Go to the door lock GUI\n"
             "2. Select 'Link Telegram'\n"
-            "3. Click 'I'm Ready'\n"
-            "4. Enter this PIN: <code>{temp_pin}</code>\n"
-            "5. Complete!\n\n"
+            "3. Click 'I Got the PIN - Continue'\n"
+            "4. Authenticate yourself (PIN + Face + Fingerprint)\n"
+            "5. Enter this Telegram PIN: <code>{temp_pin}</code>\n"
+            "6. Complete!\n\n"
             "⏱ This PIN expires in 10 minutes.\n"
             "⚠️ Can only be used once.\n"
+            "🔐 You must authenticate to link your account.\n"
+            "🗑️ This message will auto-delete in 10 minutes.\n"
         )
         
-        await update.message.reply_text(msg, parse_mode='HTML')
+        # Send message and store message_id for deletion
+        sent_message = await update.message.reply_text(msg, parse_mode='HTML')
+        
+        # Schedule message deletion after 10 minutes (600 seconds)
+        context.application.job_queue.run_once(
+            delete_pin_message,
+            600,  # 10 minutes
+            data={'chat_id': chat_id, 'message_id': sent_message.message_id, 'temp_pin': temp_pin},
+            name=f"delete_pin_{temp_pin}"
+        )
         
     except Exception as e:
         logger.error(f"Error generating PIN: {e}")

@@ -23,12 +23,14 @@ try:
     from face_recognition_folder.return_face import FaceRecognition
     from face_recognition_folder.image_capture import ImageCapture
     from servo.rotate import DoorLock
+    from hardware_keypad import HardwareKeypad
 except ImportError as e:
     print(f"Warning: Some hardware modules not available: {e}")
     FingerprintSensor = None
     FaceRecognition = None
     ImageCapture = None
     DoorLock = None
+    HardwareKeypad = None
 
 
 # =========================================
@@ -214,12 +216,14 @@ def create_user_api(name, email, phone, pin_code, fingerprint_id):
         return False, str(e)
 
 
-def verify_temp_pin_and_link_telegram(temp_pin, telegram_chat_id):
-    """Verify temporary PIN and link Telegram chat ID to user"""
+def link_telegram_with_auth(pin_code, fingerprint_id, face_name, telegram_pin):
+    """Link Telegram account after user authentication"""
     try:
         data = {
-            "temp_pin": temp_pin,
-            "telegram_chat_id": telegram_chat_id
+            "pin_code": pin_code,
+            "fingerprint_id": fingerprint_id,
+            "face_match": face_name,
+            "telegram_pin": telegram_pin
         }
         
         response = requests.post(f"{BACKEND_URL}/api/link-telegram", json=data, timeout=10)
@@ -227,7 +231,7 @@ def verify_temp_pin_and_link_telegram(temp_pin, telegram_chat_id):
         if response.status_code == 200:
             return True, response.json()
         else:
-            return False, response.json().get('error', 'Invalid PIN or already used')
+            return False, response.json().get('error', 'Invalid credentials or PIN')
     except Exception as e:
         return False, str(e)
 
@@ -381,8 +385,13 @@ class UnlockDoor:
         self.step = "pin"  # pin -> face -> fingerprint -> unlock
         self.fingerprint_id = None
         self.face_name = None
-        self.message = "Enter 4-digit PIN"
+        self.message = "Use hardware keypad to enter PIN"
         self.buttons = {}
+        self.hardware_keypad = None
+        self.pin_input_active = False
+        self.camera = None  # For face recognition preview
+        self.camera = None
+        self.camera_surface = None
     
     def draw(self):
         screen.fill(COLOR_BG)
@@ -394,12 +403,26 @@ class UnlockDoor:
         draw_text(self.message, font_medium, COLOR_TEXT, SCREEN_WIDTH // 2, 100, center=True)
         
         if self.step == "pin":
-            # PIN input
+            # PIN input display
             pin_display = "•" * len(self.pin)
-            draw_text(pin_display, font_large, COLOR_TEXT, SCREEN_WIDTH // 2, 200, center=True)
+            draw_text("PIN:", font_large, COLOR_TEXT, SCREEN_WIDTH // 2 - 100, 200, center=False)
+            draw_text(pin_display, font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, 200, center=True)
             
-            # Number pad
-            self.draw_numpad()
+            # Instructions
+            draw_text("Enter 4-digit PIN on hardware keypad", font_medium, COLOR_TEXT, SCREEN_WIDTH // 2, 250, center=True)
+            draw_text("Press # to submit, * to clear", font_small, COLOR_DARK_GRAY, SCREEN_WIDTH // 2, 280, center=True)
+            
+            # Start PIN input button
+            if not self.pin_input_active:
+                self.buttons['start_pin'] = draw_button(
+                    "Start PIN Input", SCREEN_WIDTH // 2 - 150, 320, 300, 60, COLOR_SUCCESS
+                )
+            else:
+                draw_text("Waiting for PIN input...", font_medium, COLOR_WARNING, SCREEN_WIDTH // 2, 350, center=True)
+                # Cancel button
+                self.buttons['cancel_pin'] = draw_button(
+                    "Cancel", SCREEN_WIDTH // 2 - 100, 380, 200, 50, COLOR_ERROR
+                )
         
         elif self.step in ["face", "fingerprint", "unlock"]:
             # Show progress
@@ -408,104 +431,407 @@ class UnlockDoor:
                 "fingerprint": "Place finger on sensor...",
                 "unlock": "Unlocking door..."
             }
-            draw_text(progress_text[self.step], font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, 240, center=True)
+            draw_text(progress_text[self.step], font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, 100, center=True)
+            
+            # Show camera preview during face recognition
+            if self.step == "face":
+                self.draw_camera_preview()
+            else:
+                # Show placeholder for other steps
+                pygame.draw.rect(screen, COLOR_DARK_GRAY, (SCREEN_WIDTH // 2 - 240, 140, 480, 280), border_radius=10)
+                step_icons = {
+                    "fingerprint": "👆 Place finger on sensor",
+                    "unlock": "🔓 Unlocking..."
+                }
+                if self.step in step_icons:
+                    draw_text(step_icons[self.step], font_large, COLOR_WHITE, SCREEN_WIDTH // 2, 280, center=True)
         
         # Back button
         self.buttons['back'] = draw_button("Back", 20, SCREEN_HEIGHT - 70, 150, 50, COLOR_GRAY, COLOR_TEXT)
     
-    def draw_numpad(self):
-        """Draw numeric keypad"""
-        button_size = 80
-        spacing = 20
-        start_x = (SCREEN_WIDTH - (button_size * 3 + spacing * 2)) // 2
-        start_y = 250
-        
-        # Number buttons
-        for i in range(9):
-            row = i // 3
-            col = i % 3
-            x = start_x + col * (button_size + spacing)
-            y = start_y + row * (button_size + spacing)
-            
-            self.buttons[f'num_{i+1}'] = draw_button(
-                str(i + 1), x, y, button_size, button_size, COLOR_PRIMARY
-            )
-        
-        # Bottom row: Clear, 0, Enter
-        self.buttons['clear'] = draw_button(
-            "CLR", start_x, start_y + 3 * (button_size + spacing), button_size, button_size, COLOR_ERROR
-        )
-        
-        self.buttons['num_0'] = draw_button(
-            "0", start_x + button_size + spacing, start_y + 3 * (button_size + spacing), 
-            button_size, button_size, COLOR_PRIMARY
-        )
-        
-        self.buttons['enter'] = draw_button(
-            "OK", start_x + 2 * (button_size + spacing), start_y + 3 * (button_size + spacing), 
-            button_size, button_size, COLOR_SUCCESS
-        )
+    def draw_camera_preview(self):
+        """Draw live camera preview during face recognition"""
+        # Camera should already be initialized by process_face_step
+        if self.camera:
+            try:
+                import cv2
+                import numpy as np
+                
+                # Capture frame
+                frame = self.camera.capture_array()
+                
+                # Convert from RGB to BGR for OpenCV
+                if len(frame.shape) == 3 and frame.shape[2] == 3:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                
+                # Resize to fit screen (keeping aspect ratio)
+                display_height = 280
+                aspect_ratio = frame.shape[1] / frame.shape[0]
+                display_width = int(display_height * aspect_ratio)
+                frame_resized = cv2.resize(frame, (display_width, display_height))
+                
+                # Convert to pygame surface
+                frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                frame_surface = pygame.surfarray.make_surface(np.transpose(frame_rgb, (1, 0, 2)))
+                
+                # Display on screen
+                x_pos = (SCREEN_WIDTH - display_width) // 2
+                screen.blit(frame_surface, (x_pos, 140))
+                
+                # Add a face detection overlay frame
+                pygame.draw.rect(screen, COLOR_SUCCESS, (x_pos, 140, display_width, display_height), 3)
+                
+                # Show scanning text overlay
+                draw_text("Scanning for face...", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 450, center=True)
+                
+            except Exception as e:
+                print(f"Camera feed error: {e}")
+                self.draw_camera_placeholder()
+        else:
+            self.draw_camera_placeholder()
+    
+    def draw_camera_placeholder(self):
+        """Draw placeholder when camera is not available"""
+        pygame.draw.rect(screen, COLOR_DARK_GRAY, (SCREEN_WIDTH // 2 - 240, 140, 480, 280), border_radius=10)
+        draw_text("📷 Camera Preview", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 280, center=True)
+        draw_text("Position your face in the frame", font_small, COLOR_WHITE, SCREEN_WIDTH // 2, 310, center=True)
     
     def handle_click(self, pos):
         for action, rect in self.buttons.items():
             if rect.collidepoint(pos):
                 if action == 'back':
+                    self.cleanup_keypad()
                     return 'back'
-                elif action.startswith('num_'):
-                    num = action.split('_')[1]
-                    if len(self.pin) < 4:
-                        self.pin += num
-                    # Don't return, just continue to update display
-                elif action == 'clear':
-                    self.pin = ""
-                    # Don't return, just continue to update display
-                elif action == 'enter' and len(self.pin) == 4:
-                    return 'verify_pin'
+                elif action == 'start_pin':
+                    return 'start_pin_input'
+                elif action == 'cancel_pin':
+                    return 'cancel_pin_input'
         return None
     
-    def verify_and_unlock(self):
-        """Perform authentication and unlock"""
-        # Step 1: Face recognition
-        self.step = "face"
-        self.message = "Scanning face..."
+    def start_pin_input(self):
+        """Start hardware PIN input process"""
+        if HardwareKeypad:
+            try:
+                print("[INFO] Initializing hardware keypad...")
+                self.hardware_keypad = HardwareKeypad()
+                self.pin_input_active = True
+                self.message = "Enter PIN on hardware keypad"
+                
+                # Start PIN input in a non-blocking way
+                # We'll check for input in the main loop
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to initialize hardware keypad: {e}")
+                show_message(f"Keypad error: {str(e)}", "error", 3000)
+                return False
+        else:
+            # Fallback to on-screen numpad if hardware not available
+            print("[INFO] Hardware keypad not available, using fallback")
+            self.message = "Hardware keypad not available"
+            show_message("Hardware keypad not available", "warning", 2000)
+            return False
+    
+    def check_pin_input(self):
+        """Check for PIN input from hardware keypad (non-blocking)"""
+        if not self.pin_input_active or not self.hardware_keypad:
+            return None
+            
+        try:
+            # Use the debounced check_pin_input method from hardware keypad
+            key = self.hardware_keypad.check_pin_input()
+            
+            if key:
+                if key == "#":  # Submit PIN
+                    if len(self.pin) == 4:
+                        self.pin_input_active = False
+                        self.cleanup_keypad()
+                        return 'verify_pin'
+                    else:
+                        show_message("PIN must be 4 digits", "warning", 1500)
+                elif key == "*":  # Clear PIN
+                    self.pin = ""
+                    print("[INFO] PIN cleared")
+                elif key.isdigit() and len(self.pin) < 4:
+                    self.pin += key
+                    print(f"[INFO] PIN length: {len(self.pin)}")
+                    
+        except Exception as e:
+            print(f"[ERROR] Keypad input error: {e}")
+            self.pin_input_active = False
+            self.cleanup_keypad()
+            show_message(f"Keypad error: {str(e)}", "error", 2000)
+            
+        return None
+    
+    def cancel_pin_input(self):
+        """Cancel PIN input process"""
+        self.pin_input_active = False
+        self.pin = ""
+        self.cleanup_keypad()
+        self.message = "PIN input cancelled"
+        print("[INFO] PIN input cancelled")
+    
+    def cleanup_keypad(self):
+        """Cleanup hardware keypad resources"""
+        if self.hardware_keypad:
+            try:
+                self.hardware_keypad.cleanup()
+                self.hardware_keypad = None
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up keypad: {e}")
+    
+    def cleanup_camera(self):
+        """Cleanup camera resources"""
+        # Clean up face recognition object first
+        if hasattr(self, 'face_recognition_obj') and self.face_recognition_obj:
+            try:
+                self.face_recognition_obj.picam2 = None  # Prevent it from trying to close our camera
+                self.face_recognition_obj = None
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up face recognition: {e}")
         
+        # Clean up our camera
+        if self.camera:
+            try:
+                self.camera.stop()
+                self.camera.close()
+                self.camera = None
+                print("[INFO] Camera cleaned up successfully")
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up camera: {e}")
+    
+    def verify_and_unlock(self):
+        """Start the step-by-step unlock process"""
+        # Initialize unlock state
+        self.unlock_state = "starting"
+        self.unlock_step = "face"
+        self.step = "face"
+        self.message = "Starting face recognition..."
+        self.face_name = None
+        self.fingerprint_id = None
+        self.fingerprint_attempts = 0
+        self.face_recognition_obj = None
+        self.face_start_time = time.time()  # Add timeout tracking
+        
+        # Return None to indicate async process started
+        return None
+    
+    def process_unlock_step(self):
+        """Process the current unlock step - called from main loop"""
+        if not hasattr(self, 'unlock_state') or self.unlock_state != "processing":
+            return None
+            
+        if self.unlock_step == "face":
+            return self.process_face_step()
+        elif self.unlock_step == "fingerprint":
+            return self.process_fingerprint_step()
+        elif self.unlock_step == "verify":
+            return self.process_verify_step()
+        elif self.unlock_step == "unlock":
+            return self.process_unlock_step_final()
+        
+        return None
+    
+    def process_face_step(self):
+        """Process face recognition step with GUI camera preview"""
+        self.step = "face"
+        
+        # Check timeout (15 seconds)
+        if time.time() - self.face_start_time > 15:
+            self.unlock_state = "failed"
+            return False, "Face recognition timeout"
+        
+        self.message = f"Position your face in front of camera... ({int(15 - (time.time() - self.face_start_time))}s)"
+        
+        # Initialize camera for GUI preview if not already done
+        if self.camera is None:
+            try:
+                from picamera2 import Picamera2
+                self.camera = Picamera2()
+                config = self.camera.create_preview_configuration(main={"size": (640, 480)})
+                self.camera.configure(config)
+                self.camera.start()
+                time.sleep(0.5)  # Let camera warm up
+                print("[INFO] Camera initialized for unlock preview")
+            except Exception as e:
+                print(f"Camera init error: {e}")
+                self.camera = None
+                self.unlock_state = "failed"
+                return False, f"Camera error: {str(e)}"
+        
+        # Run face recognition without initializing its own camera
         if FaceRecognition:
             try:
-                face_rec = FaceRecognition()
-                self.face_name = face_rec.find_face()
-                face_rec.release_camera()
+                # Create face recognition object but don't let it initialize camera
+                if self.face_recognition_obj is None:
+                    print("[INFO] Creating face recognition object...")
+                    self.face_recognition_obj = FaceRecognition()
+                    # Manually set the camera to use our existing one
+                    self.face_recognition_obj.picam2 = self.camera
+                    print("[INFO] Face recognition object created and camera assigned")
                 
-                if self.face_name == "Unknown":
-                    return False, "Face not recognized"
+                # Capture and process frame for recognition
+                if self.camera:
+                    frame = self.camera.capture_array()
+                    print(f"[DEBUG] Captured frame shape: {frame.shape}")
+                    
+                    # Use face recognition processing without camera management
+                    recognized_name = self.face_recognition_obj._process_frame(frame)
+                    print(f"[DEBUG] Face recognition result: {recognized_name}")
+                    
+                    if recognized_name != "Unknown":
+                        print(f"[INFO] Face recognized: {recognized_name}")
+                        self.face_name = recognized_name
+                        # Clean up face recognition object
+                        self.face_recognition_obj = None
+                        # Clean up camera immediately before moving to fingerprint
+                        if self.camera:
+                            try:
+                                self.camera.stop()
+                                self.camera.close()
+                                self.camera = None
+                                print("[INFO] Camera cleaned up after face recognition")
+                            except Exception as e:
+                                print(f"[WARNING] Error cleaning up camera: {e}")
+                        # Move to fingerprint step
+                        self.unlock_step = "fingerprint"
+                        self.step = "fingerprint"  # Update step immediately to stop draw_camera_preview
+                        self.fingerprint_attempts = 0
+                        return None
+                    
+                    # Continue processing - face not recognized yet
+                    return None
+                else:
+                    self.unlock_state = "failed"
+                    return False, "Camera not available"
+                    
             except Exception as e:
+                print(f"[ERROR] Face recognition error: {e}")
+                import traceback
+                traceback.print_exc()
+                self.unlock_state = "failed"
                 return False, f"Face error: {str(e)}"
         else:
-            self.face_name = "test_user"  # Demo mode
-        
-        # Step 2: Fingerprint
+            # Demo mode
+            print("[INFO] FaceRecognition module not available, using demo mode")
+            self.face_name = "test_user"
+            self.unlock_step = "fingerprint"
+            self.fingerprint_attempts = 0
+            return None
+    
+    def process_fingerprint_step(self):
+        """Process fingerprint step with 3 retries"""
         self.step = "fingerprint"
-        self.message = "Scanning fingerprint..."
+        self.message = f"Place finger on sensor... (Attempt {self.fingerprint_attempts + 1}/3)"
+        
+        # Clean up camera if not already done
+        if self.camera:
+            try:
+                self.camera.stop()
+                self.camera.close()
+                self.camera = None
+                print("[INFO] Camera cleaned up before fingerprint scan")
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up camera: {e}")
+        
+        # Initialize fingerprint start time if first attempt
+        if not hasattr(self, 'fingerprint_start_time'):
+            self.fingerprint_start_time = time.time()
+        
+        # Check timeout (10 seconds per attempt)
+        if time.time() - self.fingerprint_start_time > 10:
+            self.fingerprint_attempts += 1
+            if self.fingerprint_attempts >= 3:
+                self.unlock_state = "failed"
+                return False, "Fingerprint not detected after 3 attempts"
+            else:
+                self.message = f"Timeout, try again... (Attempt {self.fingerprint_attempts + 1}/3)"
+                self.fingerprint_start_time = time.time()  # Reset timer for next attempt
+                return None
         
         if FingerprintSensor:
             try:
-                fp_sensor = FingerprintSensor()
-                if fp_sensor.find_fingerprint():
-                    self.fingerprint_id = fp_sensor.finger.finger_id
+                # Non-blocking fingerprint check
+                if not hasattr(self, 'fp_sensor') or self.fp_sensor is None:
+                    self.fp_sensor = FingerprintSensor()
+                
+                # Try to get fingerprint image (non-blocking check)
+                import adafruit_fingerprint
+                result = self.fp_sensor.finger.get_image()
+                
+                if result == adafruit_fingerprint.OK:
+                    # Image captured, now process it
+                    if self.fp_sensor.finger.image_2_tz(1) == adafruit_fingerprint.OK:
+                        # Search for matching fingerprint
+                        if self.fp_sensor.finger.finger_search() == adafruit_fingerprint.OK:
+                            self.fingerprint_id = self.fp_sensor.finger.finger_id
+                            print(f"[INFO] Fingerprint matched with ID #{self.fingerprint_id}")
+                            self.fp_sensor = None
+                            del self.fingerprint_start_time
+                            self.unlock_step = "verify"
+                            return None
+                        else:
+                            print("[INFO] No matching fingerprint found")
+                            self.fingerprint_attempts += 1
+                            self.fp_sensor = None
+                            if self.fingerprint_attempts >= 3:
+                                del self.fingerprint_start_time
+                                self.unlock_state = "failed"
+                                return False, "Fingerprint not recognized after 3 attempts"
+                            else:
+                                self.message = f"Not recognized, try again... (Attempt {self.fingerprint_attempts + 1}/3)"
+                                self.fingerprint_start_time = time.time()
+                                return None
+                    else:
+                        print("[INFO] Failed to convert image to template")
+                        # Continue waiting for another try
+                        return None
                 else:
-                    return False, "Fingerprint not recognized"
+                    # No finger detected yet, continue waiting
+                    return None
+                    
             except Exception as e:
-                return False, f"Fingerprint error: {str(e)}"
+                print(f"[ERROR] Fingerprint error: {e}")
+                import traceback
+                traceback.print_exc()
+                self.fingerprint_attempts += 1
+                self.fp_sensor = None
+                if self.fingerprint_attempts >= 3:
+                    if hasattr(self, 'fingerprint_start_time'):
+                        del self.fingerprint_start_time
+                    self.unlock_state = "failed"
+                    return False, f"Fingerprint error: {str(e)}"
+                else:
+                    self.message = f"Error, try again... (Attempt {self.fingerprint_attempts + 1}/3)"
+                    self.fingerprint_start_time = time.time()
+                    return None
         else:
+            # Demo mode
+            print("[INFO] FingerprintSensor module not available, using demo mode")
             self.fingerprint_id = 1  # Demo mode
+            self.unlock_step = "verify"
+            if hasattr(self, 'fingerprint_start_time'):
+                del self.fingerprint_start_time
+            return None
+    
+    def process_verify_step(self):
+        """Process backend verification step"""
+        self.step = "fingerprint"
+        self.message = "Verifying credentials..."
         
-        # Step 3: Verify with backend
         success, user = verify_user_for_unlock(self.pin, self.fingerprint_id, self.face_name)
         
         if not success:
             log_access(access_type="failed_combined", method="gui", notes="Authentication failed")
+            self.unlock_state = "failed"
             return False, "Authentication failed"
         
-        # Step 4: Unlock door
+        self.user_data = user
+        self.unlock_step = "unlock"
+        return None
+    
+    def process_unlock_step_final(self):
+        """Process final unlock step"""
         self.step = "unlock"
         self.message = "Access granted! Unlocking..."
         
@@ -515,9 +841,10 @@ class UnlockDoor:
             except Exception as e:
                 print(f"Lock error: {e}")
         
-        log_access(user_id=user.get('user_id'), access_type="success", method="gui")
+        log_access(user_id=self.user_data.get('user_id'), access_type="success", method="gui")
+        self.unlock_state = "completed"
         
-        return True, f"Welcome, {user.get('name', 'User')}!"
+        return True, f"Welcome, {self.user_data.get('name', 'User')}!"
 
 
 class CreateUser:
@@ -1006,14 +1333,24 @@ class CreateUser:
 
 
 class LinkTelegram:
-    """Link Telegram account screen"""
+    """Link Telegram account screen - requires authentication"""
     
     def __init__(self):
-        self.step = "instructions"  # instructions -> enter_pin -> complete
-        self.temp_pin = ""
-        self.entered_pin = ""
-        self.chat_id = ""
+        self.step = "instructions"  # instructions -> authenticate -> enter_telegram_pin -> complete
+        self.pin = ""
+        self.fingerprint_id = None
+        self.face_name = None
+        self.telegram_pin = ""
         self.buttons = {}
+        self.hardware_keypad = None
+        self.pin_input_active = False
+        self.camera = None
+        
+        # Authentication state (reusing UnlockDoor logic)
+        self.unlock_state = None
+        self.unlock_step = None
+        self.face_recognition_obj = None
+        self.fingerprint_attempts = 0
     
     def draw(self):
         screen.fill(COLOR_BG)
@@ -1023,8 +1360,12 @@ class LinkTelegram:
         
         if self.step == "instructions":
             self.draw_instructions()
-        elif self.step == "enter_pin":
-            self.draw_pin_entry()
+        elif self.step == "pin":
+            self.draw_pin_input()
+        elif self.step in ["face", "fingerprint"]:
+            self.draw_authentication()
+        elif self.step == "enter_telegram_pin":
+            self.draw_telegram_pin_entry()
         elif self.step == "complete":
             self.draw_completion()
         
@@ -1044,28 +1385,98 @@ class LinkTelegram:
             "3. Send /start command",
             "4. Send /register command",
             "5. Bot will send you a 4-digit PIN",
-            "6. Return here and enter the PIN"
+            "6. Return here and authenticate yourself",
+            "7. Enter the PIN from Telegram bot"
         ]
         
         for instruction in instructions:
             draw_text(instruction, font_medium, COLOR_TEXT, 100, y)
             y += 40
         
-        # Generate temporary PIN button
-        self.buttons['generate'] = draw_button(
-            "I'm Ready - Generate PIN", SCREEN_WIDTH // 2 - 180, y + 20, 360, 70, COLOR_SUCCESS
+        # Continue button
+        self.buttons['continue'] = draw_button(
+            "I Got the PIN - Continue", SCREEN_WIDTH // 2 - 180, y + 20, 360, 70, COLOR_SUCCESS
         )
     
-    def draw_pin_entry(self):
-        """Draw PIN entry screen"""
+    def draw_pin_input(self):
+        """Draw PIN input screen (same as UnlockDoor)"""
+        draw_text("Step 1: Verify Your Identity", font_large, COLOR_TEXT, SCREEN_WIDTH // 2, 100, center=True)
+        
+        # PIN input display
+        pin_display = "•" * len(self.pin)
+        draw_text("Enter Your PIN:", font_medium, COLOR_TEXT, SCREEN_WIDTH // 2 - 100, 200, center=False)
+        draw_text(pin_display, font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, 200, center=True)
+        
+        # Instructions
+        draw_text("Enter 4-digit PIN on hardware keypad", font_medium, COLOR_TEXT, SCREEN_WIDTH // 2, 250, center=True)
+        draw_text("Press # to submit, * to clear", font_small, COLOR_DARK_GRAY, SCREEN_WIDTH // 2, 280, center=True)
+        
+        # Start PIN input button
+        if not self.pin_input_active:
+            self.buttons['start_pin'] = draw_button(
+                "Start PIN Input", SCREEN_WIDTH // 2 - 150, 320, 300, 60, COLOR_SUCCESS
+            )
+        else:
+            draw_text("Waiting for PIN input...", font_medium, COLOR_WARNING, SCREEN_WIDTH // 2, 350, center=True)
+            self.buttons['cancel_pin'] = draw_button(
+                "Cancel", SCREEN_WIDTH // 2 - 100, 380, 200, 50, COLOR_ERROR
+            )
+    
+    def draw_authentication(self):
+        """Draw authentication progress (face/fingerprint)"""
+        progress_text = {
+            "face": "Step 2: Face Recognition",
+            "fingerprint": "Step 3: Fingerprint Scan"
+        }
+        draw_text(progress_text[self.step], font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, 100, center=True)
+        
+        if self.step == "face":
+            # Show camera preview
+            if self.camera:
+                try:
+                    import cv2
+                    import numpy as np
+                    
+                    frame = self.camera.capture_array()
+                    
+                    if len(frame.shape) == 3 and frame.shape[2] == 3:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    
+                    display_height = 280
+                    aspect_ratio = frame.shape[1] / frame.shape[0]
+                    display_width = int(display_height * aspect_ratio)
+                    frame_resized = cv2.resize(frame, (display_width, display_height))
+                    
+                    frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
+                    frame_surface = pygame.surfarray.make_surface(np.transpose(frame_rgb, (1, 0, 2)))
+                    
+                    x_pos = (SCREEN_WIDTH - display_width) // 2
+                    screen.blit(frame_surface, (x_pos, 140))
+                    pygame.draw.rect(screen, COLOR_SUCCESS, (x_pos, 140, display_width, display_height), 3)
+                    
+                    draw_text("Scanning for face...", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 450, center=True)
+                except:
+                    pygame.draw.rect(screen, COLOR_DARK_GRAY, (SCREEN_WIDTH // 2 - 240, 140, 480, 280), border_radius=10)
+                    draw_text("📷 Camera Preview", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 280, center=True)
+            else:
+                pygame.draw.rect(screen, COLOR_DARK_GRAY, (SCREEN_WIDTH // 2 - 240, 140, 480, 280), border_radius=10)
+                draw_text("📷 Initializing camera...", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 280, center=True)
+        else:  # fingerprint
+            pygame.draw.rect(screen, COLOR_DARK_GRAY, (SCREEN_WIDTH // 2 - 240, 140, 480, 280), border_radius=10)
+            draw_text("👆 Place finger on sensor", font_large, COLOR_WHITE, SCREEN_WIDTH // 2, 280, center=True)
+            draw_text(f"Attempt {self.fingerprint_attempts + 1}/3", font_medium, COLOR_WHITE, SCREEN_WIDTH // 2, 320, center=True)
+    
+    def draw_telegram_pin_entry(self):
+        """Draw Telegram PIN entry screen"""
         y = 120
         
+        draw_text("Step 4: Enter Telegram PIN", font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, y, center=True)
         draw_text("Enter the 4-digit PIN from Telegram bot", font_medium, COLOR_TEXT, 
-                 SCREEN_WIDTH // 2, y, center=True)
+                 SCREEN_WIDTH // 2, y + 50, center=True)
         
-        y += 80
-        pin_display = "•" * len(self.entered_pin)
-        draw_text(pin_display, font_large, COLOR_TEXT, SCREEN_WIDTH // 2, y, center=True)
+        y += 130
+        pin_display = "•" * len(self.telegram_pin)
+        draw_text(pin_display, font_large, COLOR_PRIMARY, SCREEN_WIDTH // 2, y, center=True)
         
         # Number pad
         self.draw_numpad()
@@ -1075,7 +1486,7 @@ class LinkTelegram:
         button_size = 80
         spacing = 20
         start_x = (SCREEN_WIDTH - (button_size * 3 + spacing * 2)) // 2
-        start_y = 220
+        start_y = 280
         
         # Number buttons
         for i in range(9):
@@ -1119,38 +1530,306 @@ class LinkTelegram:
             if rect.collidepoint(pos):
                 if action == 'back' or action == 'done':
                     return 'back'
-                elif action == 'generate':
-                    return 'generate_pin'
+                elif action == 'continue':
+                    return 'start_auth'
+                elif action == 'start_pin':
+                    return 'start_pin_input'
+                elif action == 'cancel_pin':
+                    return 'cancel_pin_input'
                 elif action.startswith('num_'):
                     num = action.split('_')[1]
-                    if len(self.entered_pin) < 4:
-                        self.entered_pin += num
-                    # Don't return, just continue to update display
+                    if len(self.telegram_pin) < 4:
+                        self.telegram_pin += num
+                    return None  # Stay on same screen
                 elif action == 'clear':
-                    self.entered_pin = ""
-                    # Don't return, just continue to update display
-                elif action == 'verify' and len(self.entered_pin) == 4:
-                    return 'verify_pin'
+                    self.telegram_pin = ""
+                    return None  # Stay on same screen
+                elif action == 'verify' and len(self.telegram_pin) == 4:
+                    return 'verify_telegram_pin'
         return None
     
-    def generate_temp_pin(self):
-        """Generate temporary PIN (this should be done by backend)"""
-        self.temp_pin = generate_temp_pin()
-        # In real implementation, this would be sent to user via Telegram bot
-        # For now, we'll show it on screen for testing
-        show_message(f"Test PIN (will be sent by bot): {self.temp_pin}", "info", 3000)
-        self.step = "enter_pin"
+    # Reuse methods from UnlockDoor
+    def start_pin_input(self):
+        """Start hardware PIN input process"""
+        if HardwareKeypad:
+            try:
+                print("[INFO] Initializing hardware keypad...")
+                self.hardware_keypad = HardwareKeypad()
+                self.pin_input_active = True
+                return True
+            except Exception as e:
+                print(f"[ERROR] Failed to initialize hardware keypad: {e}")
+                show_message(f"Keypad error: {str(e)}", "error", 3000)
+                return False
+        else:
+            show_message("Hardware keypad not available", "warning", 2000)
+            return False
+    
+    def check_pin_input(self):
+        """Check for PIN input from hardware keypad (non-blocking)"""
+        if not self.pin_input_active or not self.hardware_keypad:
+            return None
+            
+        try:
+            key = self.hardware_keypad.check_pin_input()
+            
+            if key:
+                if key == "#":  # Submit PIN
+                    if len(self.pin) == 4:
+                        self.pin_input_active = False
+                        self.cleanup_keypad()
+                        return 'verify_pin'
+                    else:
+                        show_message("PIN must be 4 digits", "warning", 1500)
+                elif key == "*":  # Clear PIN
+                    self.pin = ""
+                elif key.isdigit() and len(self.pin) < 4:
+                    self.pin += key
+                    
+        except Exception as e:
+            print(f"[ERROR] Keypad input error: {e}")
+            self.pin_input_active = False
+            self.cleanup_keypad()
+            show_message(f"Keypad error: {str(e)}", "error", 2000)
+            
+        return None
+    
+    def cancel_pin_input(self):
+        """Cancel PIN input process"""
+        self.pin_input_active = False
+        self.pin = ""
+        self.cleanup_keypad()
+    
+    def cleanup_keypad(self):
+        """Cleanup hardware keypad resources"""
+        if self.hardware_keypad:
+            try:
+                self.hardware_keypad.cleanup()
+                self.hardware_keypad = None
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up keypad: {e}")
+    
+    def cleanup_camera(self):
+        """Cleanup camera resources"""
+        if hasattr(self, 'face_recognition_obj') and self.face_recognition_obj:
+            try:
+                self.face_recognition_obj.picam2 = None
+                self.face_recognition_obj = None
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up face recognition: {e}")
+        
+        if self.camera:
+            try:
+                self.camera.stop()
+                self.camera.close()
+                self.camera = None
+                print("[INFO] Camera cleaned up successfully")
+            except Exception as e:
+                print(f"[WARNING] Error cleaning up camera: {e}")
+    
+    def start_authentication(self):
+        """Start authentication process"""
+        self.unlock_state = "starting"
+        self.unlock_step = "face"
+        self.step = "face"
+        self.face_name = None
+        self.fingerprint_id = None
+        self.fingerprint_attempts = 0
+        self.face_recognition_obj = None
+        self.face_start_time = time.time()
+        return None
     
     def verify_pin(self):
-        """Verify temporary PIN"""
-        # In real implementation, verify with backend
-        # For demo, we'll just check if it matches
-        if self.entered_pin == self.temp_pin:
+        """Verify PIN is entered and valid format"""
+        # Just verify PIN format - full authentication will happen in process_auth_step
+        if len(self.pin) == 4 and self.pin.isdigit():
+            return True
+        else:
+            show_message("PIN must be 4 digits", "error", 2000)
+            self.pin = ""
+            return False
+    
+    def process_auth_step(self):
+        """Process the current auth step"""
+        if not hasattr(self, 'unlock_state') or self.unlock_state != "processing":
+            return None
+            
+        if self.unlock_step == "face":
+            return self.process_face_step()
+        elif self.unlock_step == "fingerprint":
+            return self.process_fingerprint_step()
+        elif self.unlock_step == "complete":
+            # Verify user credentials with backend before allowing telegram linking
+            print(f"[INFO] Verifying user credentials - PIN: {self.pin}, FP: {self.fingerprint_id}, Face: {self.face_name}")
+            success, user_data = verify_user_for_unlock(self.pin, self.fingerprint_id, self.face_name)
+            
+            if success:
+                print(f"[INFO] User verified successfully: {user_data}")
+                # Authentication complete, move to telegram PIN entry
+                self.step = "enter_telegram_pin"
+                self.unlock_state = None
+                return None
+            else:
+                print("[ERROR] User verification failed")
+                self.unlock_state = "failed"
+                return False, "Authentication failed - invalid credentials"
+        
+        return None
+    
+    # Copy the same face and fingerprint processing methods from UnlockDoor
+    def process_face_step(self):
+        """Process face recognition step"""
+        self.step = "face"
+        
+        if time.time() - self.face_start_time > 15:
+            self.unlock_state = "failed"
+            return False, "Face recognition timeout"
+        
+        if self.camera is None:
+            try:
+                from picamera2 import Picamera2
+                self.camera = Picamera2()
+                config = self.camera.create_preview_configuration(main={"size": (640, 480)})
+                self.camera.configure(config)
+                self.camera.start()
+                time.sleep(0.5)
+                print("[INFO] Camera initialized for authentication")
+            except Exception as e:
+                print(f"Camera init error: {e}")
+                self.camera = None
+                self.unlock_state = "failed"
+                return False, f"Camera error: {str(e)}"
+        
+        if FaceRecognition:
+            try:
+                if self.face_recognition_obj is None:
+                    self.face_recognition_obj = FaceRecognition()
+                    self.face_recognition_obj.picam2 = self.camera
+                
+                if self.camera:
+                    frame = self.camera.capture_array()
+                    recognized_name = self.face_recognition_obj._process_frame(frame)
+                    
+                    if recognized_name != "Unknown":
+                        print(f"[INFO] Face recognized: {recognized_name}")
+                        self.face_name = recognized_name
+                        self.face_recognition_obj = None
+                        
+                        if self.camera:
+                            try:
+                                self.camera.stop()
+                                self.camera.close()
+                                self.camera = None
+                            except:
+                                pass
+                        
+                        self.unlock_step = "fingerprint"
+                        self.step = "fingerprint"
+                        self.fingerprint_attempts = 0
+                        return None
+                    
+                    return None
+                else:
+                    self.unlock_state = "failed"
+                    return False, "Camera not available"
+                    
+            except Exception as e:
+                print(f"[ERROR] Face recognition error: {e}")
+                self.unlock_state = "failed"
+                return False, f"Face error: {str(e)}"
+        else:
+            self.face_name = "test_user"
+            self.unlock_step = "fingerprint"
+            self.step = "fingerprint"
+            self.fingerprint_attempts = 0
+            return None
+    
+    def process_fingerprint_step(self):
+        """Process fingerprint step"""
+        self.step = "fingerprint"
+        
+        if self.camera:
+            try:
+                self.camera.stop()
+                self.camera.close()
+                self.camera = None
+            except:
+                pass
+        
+        if not hasattr(self, 'fingerprint_start_time'):
+            self.fingerprint_start_time = time.time()
+        
+        if time.time() - self.fingerprint_start_time > 10:
+            self.fingerprint_attempts += 1
+            if self.fingerprint_attempts >= 3:
+                self.unlock_state = "failed"
+                return False, "Fingerprint not detected after 3 attempts"
+            else:
+                self.fingerprint_start_time = time.time()
+                return None
+        
+        if FingerprintSensor:
+            try:
+                if not hasattr(self, 'fp_sensor') or self.fp_sensor is None:
+                    self.fp_sensor = FingerprintSensor()
+                
+                import adafruit_fingerprint
+                result = self.fp_sensor.finger.get_image()
+                
+                if result == adafruit_fingerprint.OK:
+                    if self.fp_sensor.finger.image_2_tz(1) == adafruit_fingerprint.OK:
+                        if self.fp_sensor.finger.finger_search() == adafruit_fingerprint.OK:
+                            self.fingerprint_id = self.fp_sensor.finger.finger_id
+                            self.fp_sensor = None
+                            del self.fingerprint_start_time
+                            self.unlock_step = "complete"
+                            return None
+                        else:
+                            self.fingerprint_attempts += 1
+                            self.fp_sensor = None
+                            if self.fingerprint_attempts >= 3:
+                                del self.fingerprint_start_time
+                                self.unlock_state = "failed"
+                                return False, "Fingerprint not recognized after 3 attempts"
+                            else:
+                                self.fingerprint_start_time = time.time()
+                                return None
+                    else:
+                        return None
+                else:
+                    return None
+                    
+            except Exception as e:
+                print(f"[ERROR] Fingerprint error: {e}")
+                self.fingerprint_attempts += 1
+                self.fp_sensor = None
+                if self.fingerprint_attempts >= 3:
+                    if hasattr(self, 'fingerprint_start_time'):
+                        del self.fingerprint_start_time
+                    self.unlock_state = "failed"
+                    return False, f"Fingerprint error: {str(e)}"
+                else:
+                    self.fingerprint_start_time = time.time()
+                    return None
+        else:
+            self.fingerprint_id = 1
+            self.unlock_step = "complete"
+            if hasattr(self, 'fingerprint_start_time'):
+                del self.fingerprint_start_time
+            return None
+    
+    def link_telegram(self):
+        """Link telegram account with backend"""
+        success, result = link_telegram_with_auth(
+            self.pin, self.fingerprint_id, self.face_name, self.telegram_pin
+        )
+        
+        if success:
             self.step = "complete"
             return True
         else:
-            show_message("Invalid PIN. Please try again.", "error")
-            self.entered_pin = ""
+            show_message(f"Error: {result}", "error", 3000)
+            self.telegram_pin = ""
             return False
 
 
@@ -1192,8 +1871,13 @@ def main():
                 
                 # Handle actions
                 if action == 'back':
-                    # Cleanup camera if leaving create_user screen
+                    # Cleanup resources when leaving screens
                     if current_screen == "create_user":
+                        screen_obj.cleanup_camera()
+                    elif current_screen == "unlock":
+                        screen_obj.cleanup_keypad()
+                    elif current_screen == "link_telegram":
+                        screen_obj.cleanup_keypad()
                         screen_obj.cleanup_camera()
                     
                     current_screen = "main_menu"
@@ -1212,12 +1896,29 @@ def main():
                     current_screen = "link_telegram"
                 
                 elif action == 'verify_pin' and current_screen == "unlock":
-                    show_message("Authenticating...", "info", 1000)
-                    success, message = screen_obj.verify_and_unlock()
-                    show_message(message, "success" if success else "error", 3000)
-                    if success:
-                        current_screen = "main_menu"
-                        screens["unlock"] = UnlockDoor()
+                    show_message("Starting authentication...", "info", 1000)
+                    result = screen_obj.verify_and_unlock()
+                    if result is None:
+                        # Async process started, set state to processing
+                        screen_obj.unlock_state = "processing"
+                        print("[INFO] Async unlock process started")
+                    else:
+                        # Sync result (error)
+                        success, message = result
+                        show_message(message, "success" if success else "error", 3000)
+                        if success:
+                            current_screen = "main_menu"
+                            screens["unlock"] = UnlockDoor()
+                
+                elif action == 'start_pin_input' and current_screen == "unlock":
+                    if screen_obj.start_pin_input():
+                        print("[INFO] Hardware PIN input started")
+                    else:
+                        print("[WARNING] Failed to start hardware PIN input")
+                
+                elif action == 'cancel_pin_input' and current_screen == "unlock":
+                    screen_obj.cancel_pin_input()
+                    print("[INFO] PIN input cancelled")
                 
                 elif action == 'enroll_fingerprint' and current_screen == "create_user":
                     print(f"[INFO] Fingerprint enrollment action triggered. Current step: {screen_obj.step}")
@@ -1239,15 +1940,102 @@ def main():
                         show_message("User created successfully!", "success", 2000)
                         print("[INFO] Registration completed successfully")
                 
-                elif action == 'generate_pin' and current_screen == "link_telegram":
-                    screen_obj.generate_temp_pin()
+                elif action == 'start_auth' and current_screen == "link_telegram":
+                    # Start PIN input for authentication
+                    screen_obj.step = "pin"
+                    print("[INFO] Starting Telegram link authentication")
+                
+                elif action == 'start_pin_input' and current_screen == "link_telegram":
+                    if screen_obj.start_pin_input():
+                        print("[INFO] Hardware PIN input started for Telegram linking")
+                    else:
+                        print("[WARNING] Failed to start hardware PIN input for Telegram linking")
+                
+                elif action == 'cancel_pin_input' and current_screen == "link_telegram":
+                    screen_obj.cancel_pin_input()
+                    print("[INFO] PIN input cancelled for Telegram linking")
                 
                 elif action == 'verify_pin' and current_screen == "link_telegram":
+                    # Verify PIN first, then start face/fingerprint auth
                     if screen_obj.verify_pin():
+                        show_message("PIN verified, starting authentication...", "info", 1000)
+                        screen_obj.start_authentication()
+                        screen_obj.unlock_state = "processing"
+                        print("[INFO] Telegram link authentication started")
+                    else:
+                        print("[WARNING] PIN verification failed for Telegram linking")
+                
+                elif action == 'verify_telegram_pin' and current_screen == "link_telegram":
+                    # Complete the telegram linking
+                    show_message("Linking Telegram account...", "info", 2000)
+                    if screen_obj.link_telegram():
                         show_message("Telegram linked successfully!", "success", 2000)
+                        print("[INFO] Telegram account linked successfully")
                 
                 elif action == 'invalid_details':
                     show_message("Please fill all required fields correctly", "error", 2000)
+        
+        # Check for hardware keypad input (non-blocking)
+        if current_screen == "unlock":
+            screen_obj = screens[current_screen]
+            keypad_action = screen_obj.check_pin_input()
+            if keypad_action == 'verify_pin':
+                show_message("Starting authentication...", "info", 1000)
+                result = screen_obj.verify_and_unlock()
+                if result is None:
+                    screen_obj.unlock_state = "processing"
+                    print("[INFO] Async unlock process started from keypad")
+                else:
+                    success, message = result
+                    show_message(message, "success" if success else "error", 3000)
+                    if success:
+                        current_screen = "main_menu"
+                        screens["unlock"] = UnlockDoor()
+        
+        # Check for hardware keypad input for LinkTelegram
+        elif current_screen == "link_telegram":
+            screen_obj = screens[current_screen]
+            keypad_action = screen_obj.check_pin_input()
+            if keypad_action == 'verify_pin':
+                # Verify PIN first, then start authentication
+                if screen_obj.verify_pin():
+                    show_message("PIN verified, starting authentication...", "info", 1000)
+                    screen_obj.start_authentication()
+                    screen_obj.unlock_state = "processing"
+                    print("[INFO] Telegram link authentication started from keypad")
+                else:
+                    print("[WARNING] PIN verification failed for Telegram linking from keypad")
+        
+        # Process async unlock steps
+        if current_screen == "unlock":
+            screen_obj = screens[current_screen]
+            if hasattr(screen_obj, 'unlock_state'):
+                if screen_obj.unlock_state == "processing":
+                    result = screen_obj.process_unlock_step()
+                    if result is not None:
+                        success, message = result
+                        show_message(message, "success" if success else "error", 3000)
+                        if success:
+                            current_screen = "main_menu"
+                            screens["unlock"] = UnlockDoor()
+                        else:
+                            screen_obj.unlock_state = "idle"
+        
+        # Process async authentication steps for LinkTelegram
+        elif current_screen == "link_telegram":
+            screen_obj = screens[current_screen]
+            if hasattr(screen_obj, 'unlock_state'):
+                if screen_obj.unlock_state == "processing":
+                    result = screen_obj.process_auth_step()
+                    if result is not None:
+                        # Authentication failed
+                        success, message = result
+                        show_message(message, "error", 3000)
+                        screen_obj.unlock_state = "idle"
+                        # Reset to PIN step
+                        screen_obj.step = "pin"
+                        screen_obj.pin = ""
+                        screen_obj.fingerprint_attempts = 0
         
         # Draw current screen
         screens[current_screen].draw()
@@ -1256,6 +2044,11 @@ def main():
     
     # Cleanup before exit
     if current_screen == "create_user":
+        screens[current_screen].cleanup_camera()
+    elif current_screen == "unlock":
+        screens[current_screen].cleanup_keypad()
+    elif current_screen == "link_telegram":
+        screens[current_screen].cleanup_keypad()
         screens[current_screen].cleanup_camera()
     
     pygame.quit()
