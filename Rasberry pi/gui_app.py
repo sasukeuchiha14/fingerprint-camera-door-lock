@@ -216,23 +216,30 @@ def create_user_api(name, email, phone, pin_code, fingerprint_id):
         return False, str(e)
 
 
-def link_telegram_with_auth(pin_code, fingerprint_id, face_name, telegram_pin):
-    """Link Telegram account after user authentication"""
+def link_telegram_with_auth(temp_pin, user_id):
+    """Link Telegram account with authenticated user"""
     try:
         data = {
-            "pin_code": pin_code,
-            "fingerprint_id": fingerprint_id,
-            "face_match": face_name,
-            "telegram_pin": telegram_pin
+            "temp_pin": temp_pin,
+            "user_id": user_id
         }
         
+        print(f"[INFO] Linking Telegram with authenticated user: temp_pin={temp_pin}, user_id={user_id}")
         response = requests.post(f"{BACKEND_URL}/api/link-telegram", json=data, timeout=10)
+        
+        print(f"[INFO] Link telegram response status: {response.status_code}")
+        print(f"[INFO] Link telegram response: {response.text}")
         
         if response.status_code == 200:
             return True, response.json()
         else:
-            return False, response.json().get('error', 'Invalid credentials or PIN')
+            error_msg = response.json().get('error', 'Invalid credentials or PIN') if response.text else f'HTTP {response.status_code}'
+            print(f"[ERROR] Link telegram failed: {error_msg}")
+            return False, error_msg
     except Exception as e:
+        print(f"[ERROR] Link telegram exception: {e}")
+        import traceback
+        traceback.print_exc()
         return False, str(e)
 
 
@@ -1665,6 +1672,8 @@ class LinkTelegram:
             
             if success:
                 print(f"[INFO] User verified successfully: {user_data}")
+                # Store user data for later use in link_telegram
+                self.user_data = user_data
                 # Authentication complete, move to telegram PIN entry
                 self.step = "enter_telegram_pin"
                 self.unlock_state = None
@@ -1820,8 +1829,15 @@ class LinkTelegram:
     
     def link_telegram(self):
         """Link telegram account with backend"""
+        # Get user_id from stored user_data
+        user_id = self.user_data.get('user_id') if hasattr(self, 'user_data') else None
+        
+        if not user_id:
+            show_message("Error: User not authenticated", "error", 3000)
+            return False
+        
         success, result = link_telegram_with_auth(
-            self.pin, self.fingerprint_id, self.face_name, self.telegram_pin
+            self.telegram_pin, user_id
         )
         
         if success:

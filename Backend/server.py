@@ -642,15 +642,21 @@ def link_telegram():
     Link Telegram chat ID to user account
     Request body: {
         "temp_pin": "1234",
-        "telegram_chat_id": "123456789"
+        "user_id": "uuid" (optional - for authenticated linking)
+    }
+    OR
+    {
+        "temp_pin": "1234",
+        "telegram_chat_id": "123456789" (legacy format)
     }
     """
     try:
         data = request.get_json()
         temp_pin = data.get('temp_pin')
-        telegram_chat_id = str(data.get('telegram_chat_id'))
+        telegram_chat_id = data.get('telegram_chat_id')  # Optional for legacy support
+        user_id = data.get('user_id')  # Optional for authenticated linking
         
-        if not temp_pin or not telegram_chat_id:
+        if not temp_pin:
             return jsonify({"success": False, "error": "Missing required fields"}), 400
         
         # Verify PIN exists and not expired
@@ -672,21 +678,32 @@ def link_telegram():
         if datetime.now() > expires_at:
             return jsonify({"success": False, "error": "PIN expired"}), 400
         
-        # Get user_id from PIN data (if stored) or find next user without telegram
-        user_id = setting_value.get('user_id')
+        # Get telegram_chat_id from stored PIN data if not provided
+        if not telegram_chat_id:
+            telegram_chat_id = setting_value.get('telegram_chat_id')
+            if not telegram_chat_id:
+                return jsonify({"success": False, "error": "No chat ID associated with this PIN"}), 400
         
-        if not user_id:
-            # Find first user without telegram_chat_id
-            users = supabase.table("users").select("*").is_("telegram_chat_id", "null").execute()
-            if not users.data:
-                return jsonify({"success": False, "error": "No user found to link"}), 400
-            user_id = users.data[0]['user_id']
+        # Get user_id from PIN data (if stored) or find next user without telegram or use provided user_id
+        if user_id:
+            # Authenticated linking - use the provided user_id
+            target_user_id = user_id
+        else:
+            # Legacy flow - use stored user_id or find first user without telegram
+            target_user_id = setting_value.get('user_id')
+            
+            if not target_user_id:
+                # Find first user without telegram_chat_id
+                users = supabase.table("users").select("*").is_("telegram_chat_id", "null").execute()
+                if not users.data:
+                    return jsonify({"success": False, "error": "No user found to link"}), 400
+                target_user_id = users.data[0]['user_id']
         
         # Update user with telegram_chat_id
         supabase.table("users").update({
             "telegram_chat_id": telegram_chat_id,
             "updated_at": datetime.now().isoformat()
-        }).eq("user_id", user_id).execute()
+        }).eq("user_id", target_user_id).execute()
         
         # Mark PIN as used
         setting_value['used'] = True
@@ -695,7 +712,7 @@ def link_telegram():
         }).eq("setting_key", setting_key).execute()
         
         # Get updated user info
-        user = supabase.table("users").select("*").eq("user_id", user_id).execute()
+        user = supabase.table("users").select("*").eq("user_id", target_user_id).execute()
         
         return jsonify({
             "success": True,
