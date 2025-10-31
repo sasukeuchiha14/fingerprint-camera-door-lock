@@ -274,9 +274,11 @@ def log_access(user_id=None, access_type="success", method="gui", notes=None):
             "notes": notes
         }
         
-        requests.post(f"{BACKEND_URL}/api/log-access", json=data, timeout=5)
-    except:
-        pass
+        print(f"[INFO] Logging access: {access_type} for user {user_id} via {method}")
+        response = requests.post(f"{BACKEND_URL}/api/log-access", json=data, timeout=5)
+        print(f"[INFO] Access logged successfully: {response.status_code}")
+    except Exception as e:
+        print(f"[ERROR] Failed to log access: {e}")
 
 
 def upload_face_image(user_id, image_path):
