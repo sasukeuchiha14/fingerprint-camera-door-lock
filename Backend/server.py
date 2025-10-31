@@ -28,7 +28,7 @@ import pickle
 import face_recognition
 import cv2
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import time
 from pathlib import Path
@@ -345,11 +345,42 @@ def log_access():
         
         result = supabase.table("access_logs").insert(log_data).execute()
         
-        # Send notification for break-in attempts
-        if data.get("access_type") == "break_in_attempt":
+        # Get current timestamp for notifications
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        access_type = data.get("access_type")
+        method = data.get("authentication_method", "Unknown")
+        
+        # Send notifications based on access type
+        if access_type == "success":
+            # Get user name for successful access
+            user_id = data.get("user_id")
+            user_name = "Unknown User"
+            
+            if user_id:
+                try:
+                    user_response = supabase.table("users").select("name").eq("user_id", user_id).execute()
+                    if user_response.data:
+                        user_name = user_response.data[0]["name"]
+                except Exception as e:
+                    logger.error(f"Error getting user name: {e}")
+            
+            # Send successful unlock notification
+            send_door_unlock_notification(user_name, method, current_time)
+            
+        elif access_type in ["failed_password", "failed_face", "failed_fingerprint"]:
+            # Count recent failed attempts in last hour
+            one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+            failed_attempts = supabase.table("access_logs").select("*", count="exact").gte("timestamp", one_hour_ago).in_("access_type", ["failed_password", "failed_face", "failed_fingerprint"]).execute()
+            attempts_count = failed_attempts.count if hasattr(failed_attempts, 'count') else len(failed_attempts.data)
+            
+            # Send failed attempt notification
+            send_failed_attempt_notification(method, current_time, attempts_count)
+            
+        elif access_type == "break_in_attempt":
+            # Send break-in notification to admins only
             send_telegram_notification(
                 f"🚨 <b>BREAK-IN ATTEMPT DETECTED!</b>\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Time: {current_time}\n"
                 f"Details: {data.get('notes', 'Unknown')}",
                 "break_in"
             )
@@ -362,6 +393,48 @@ def log_access():
     except Exception as e:
         logger.error(f"Error logging access: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def send_door_unlock_notification(user_name: str, method: str, timestamp: str):
+    """Send door unlock notification via webhook"""
+    try:
+        webhook_data = {
+            "user_name": user_name,
+            "method": method,
+            "timestamp": timestamp
+        }
+        
+        # Send to local webhook server (Telegram bot)
+        requests.post(
+            "http://localhost:8001/webhook/door-unlock",
+            json=webhook_data,
+            timeout=5
+        )
+        logger.info(f"Door unlock notification sent for user: {user_name}")
+        
+    except Exception as e:
+        logger.error(f"Error sending door unlock notification: {e}")
+
+
+def send_failed_attempt_notification(method: str, timestamp: str, attempts_count: int):
+    """Send failed attempt notification via webhook"""
+    try:
+        webhook_data = {
+            "method": method,
+            "timestamp": timestamp,
+            "attempts_count": attempts_count
+        }
+        
+        # Send to local webhook server (Telegram bot)
+        requests.post(
+            "http://localhost:8001/webhook/failed-attempt",
+            json=webhook_data,
+            timeout=5
+        )
+        logger.info(f"Failed attempt notification sent: {method}")
+        
+    except Exception as e:
+        logger.error(f"Error sending failed attempt notification: {e}")
 
 
 @app.route("/api/get-users", methods=["GET"])

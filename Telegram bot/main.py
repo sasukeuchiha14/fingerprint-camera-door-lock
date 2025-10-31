@@ -12,6 +12,9 @@ from supabase import create_client, Client
 import requests
 from datetime import datetime, timedelta
 import logging
+import asyncio
+import threading
+from flask import Flask, request, jsonify
 
 # Load environment variables
 load_dotenv()
@@ -476,16 +479,144 @@ async def send_notification_to_admins(bot, message: str):
 
 
 # =========================================
+# WEBHOOK ENDPOINTS FOR BACKEND NOTIFICATIONS
+# =========================================
+
+# Create Flask app for webhook endpoints
+webhook_app = Flask(__name__)
+
+# Global bot instance for notifications
+telegram_bot = None
+
+def send_notification_sync(chat_id: str, message: str):
+    """Send notification synchronously"""
+    try:
+        import requests
+        
+        # Use Telegram Bot API directly
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        
+        response = requests.post(url, json=data, timeout=10)
+        if response.status_code == 200:
+            logger.info(f"Notification sent to chat {chat_id}")
+            return True
+        else:
+            logger.error(f"Failed to send notification to chat {chat_id}: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error sending notification to chat {chat_id}: {e}")
+        return False
+
+
+@webhook_app.route('/webhook/door-unlock', methods=['POST'])
+def webhook_door_unlock():
+    """Webhook endpoint for successful door unlock notifications"""
+    try:
+        data = request.get_json()
+        user_name = data.get('user_name', 'Unknown User')
+        method = data.get('method', 'Unknown')
+        timestamp = data.get('timestamp', 'Unknown')
+        
+        # Get all users with telegram_chat_id (excluding the user who unlocked)
+        users_response = supabase.table("users").select("name, telegram_chat_id").not_.is_("telegram_chat_id", "null").execute()
+        
+        message = (
+            f"🔓 <b>Door Unlocked Successfully</b>\n\n"
+            f"👤 <b>User:</b> {user_name}\n"
+            f"🔐 <b>Method:</b> {method}\n"
+            f"🕐 <b>Time:</b> {timestamp}\n\n"
+            f"✅ If this was you, you can ignore this message.\n"
+            f"⚠️ If this wasn't you, please check your premises immediately."
+        )
+        
+        sent_count = 0
+        for user in users_response.data:
+            # Don't send notification to the user who unlocked (avoid spam)
+            if user['name'] != user_name and user['telegram_chat_id']:
+                if send_notification_sync(user['telegram_chat_id'], message):
+                    sent_count += 1
+        
+        logger.info(f"Door unlock notification sent to {sent_count} users")
+        return jsonify({"success": True, "message": f"Notification sent to {sent_count} users"}), 200
+        
+    except Exception as e:
+        logger.error(f"Error in door unlock webhook: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@webhook_app.route('/webhook/failed-attempt', methods=['POST'])
+def webhook_failed_attempt():
+    """Webhook endpoint for failed unlock attempt notifications"""
+    try:
+        data = request.get_json()
+        method = data.get('method', 'Unknown')
+        timestamp = data.get('timestamp', 'Unknown')
+        attempts_count = data.get('attempts_count', 1)
+        
+        # Get all users with telegram_chat_id
+        users_response = supabase.table("users").select("name, telegram_chat_id").not_.is_("telegram_chat_id", "null").execute()
+        
+        message = (
+            f"🚨 <b>Failed Door Unlock Attempt</b>\n\n"
+            f"❌ <b>Method:</b> {method}\n"
+            f"🕐 <b>Time:</b> {timestamp}\n"
+            f"🔢 <b>Recent Attempts:</b> {attempts_count} in last hour\n\n"
+            f"⚠️ <b>Security Alert:</b>\n"
+            f"Someone tried to unlock the door but failed.\n"
+            f"If this wasn't any authorized user, please:\n"
+            f"• Check your premises immediately\n"
+            f"• Review security footage if available\n"
+            f"• Consider changing access codes\n\n"
+            f"🔐 Stay safe!"
+        )
+        
+        sent_count = 0
+        for user in users_response.data:
+            if user['telegram_chat_id']:
+                if send_notification_sync(user['telegram_chat_id'], message):
+                    sent_count += 1
+        
+        logger.info(f"Failed attempt notification sent to {sent_count} users")
+        return jsonify({"success": True, "message": f"Notification sent to {sent_count} users"}), 200
+        
+    except Exception as e:
+        logger.error(f"Error in failed attempt webhook: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@webhook_app.route('/webhook/health', methods=['GET'])
+def webhook_health():
+    """Health check endpoint for webhook server"""
+    return jsonify({"status": "healthy", "service": "telegram-bot-webhooks"}), 200
+
+
+def run_webhook_server():
+    """Run Flask webhook server in background thread"""
+    webhook_app.run(host='0.0.0.0', port=8001, debug=False)
+
+
+# =========================================
 # MAIN
 # =========================================
 
 def main():
-    """Start the bot"""
+    """Start the bot and webhook server"""
     if not BOT_TOKEN:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in environment")
     
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         raise RuntimeError("Missing Supabase credentials in environment")
+    
+    # Start webhook server in background thread
+    webhook_thread = threading.Thread(target=run_webhook_server, daemon=True)
+    webhook_thread.start()
+    logger.info("🌐 Webhook server started on port 8001")
     
     # Build application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -501,6 +632,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     
     logger.info("🤖 Door Lock Telegram Bot is running...")
+    logger.info("🔔 Real-time notifications enabled")
     
     # Run bot
     app.run_polling()
