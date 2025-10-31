@@ -71,10 +71,17 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # =========================================
 
 def send_telegram_notification(message: str, notification_type: str = "info"):
-    """Send notification via Telegram bot"""
+    """Send notification via Telegram bot to all linked users"""
     try:
-        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-            logger.warning("Telegram credentials not configured")
+        if not TELEGRAM_BOT_TOKEN:
+            logger.warning("Telegram bot token not configured")
+            return False
+        
+        # Get all users with linked Telegram accounts
+        users_response = supabase.table("users").select("telegram_chat_id").not_.is_("telegram_chat_id", "null").execute()
+        
+        if not users_response.data:
+            logger.warning("No users with linked Telegram accounts found")
             return False
         
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -82,24 +89,39 @@ def send_telegram_notification(message: str, notification_type: str = "info"):
         # Add emoji based on type
         emoji_map = {
             "success": "✅",
-            "error": "❌",
+            "error": "❌", 
             "warning": "⚠️",
             "info": "ℹ️",
-            "door_unlock": "🔓",
+            "unlock": "🔓",
+            "security_alert": "🚨",
             "break_in": "🚨"
         }
         emoji = emoji_map.get(notification_type, "📢")
         
         formatted_message = f"{emoji} {message}"
         
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": formatted_message,
-            "parse_mode": "HTML"
-        }
+        # Send to all linked users
+        sent_count = 0
+        for user in users_response.data:
+            try:
+                payload = {
+                    "chat_id": user["telegram_chat_id"],
+                    "text": formatted_message,
+                    "parse_mode": "HTML"
+                }
+                
+                response = requests.post(url, json=payload, timeout=10)
+                if response.status_code == 200:
+                    sent_count += 1
+                else:
+                    logger.warning(f"Failed to send to chat {user['telegram_chat_id']}: {response.status_code}")
+                    
+            except Exception as e:
+                logger.error(f"Error sending to chat {user['telegram_chat_id']}: {e}")
         
-        response = requests.post(url, json=payload, timeout=10)
-        return response.status_code == 200
+        logger.info(f"Telegram notification sent to {sent_count}/{len(users_response.data)} users")
+        return sent_count > 0
+        
     except Exception as e:
         logger.error(f"Failed to send Telegram notification: {e}")
         return False
@@ -350,6 +372,16 @@ def log_access():
         access_type = data.get("access_type")
         method = data.get("authentication_method", "Unknown")
         
+        # Convert method names to user-friendly format
+        method_names = {
+            "password": "PIN Code",
+            "face": "Face Recognition", 
+            "fingerprint": "Fingerprint",
+            "gui": "Combined Authentication",
+            "combined": "Combined Authentication"
+        }
+        friendly_method = method_names.get(method, method.capitalize())
+        
         # Send notifications based on access type
         if access_type == "success":
             # Get user name for successful access
@@ -365,16 +397,16 @@ def log_access():
                     logger.error(f"Error getting user name: {e}")
             
             # Send successful unlock notification
-            send_door_unlock_notification(user_name, method, current_time)
+            send_door_unlock_notification(user_name, friendly_method, current_time)
             
-        elif access_type in ["failed_password", "failed_face", "failed_fingerprint"]:
+        elif access_type in ["failed_password", "failed_face", "failed_fingerprint", "failed_combined"]:
             # Count recent failed attempts in last hour
             one_hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
-            failed_attempts = supabase.table("access_logs").select("*", count="exact").gte("timestamp", one_hour_ago).in_("access_type", ["failed_password", "failed_face", "failed_fingerprint"]).execute()
+            failed_attempts = supabase.table("access_logs").select("*", count="exact").gte("timestamp", one_hour_ago).in_("access_type", ["failed_password", "failed_face", "failed_fingerprint", "failed_combined"]).execute()
             attempts_count = failed_attempts.count if hasattr(failed_attempts, 'count') else len(failed_attempts.data)
             
             # Send failed attempt notification
-            send_failed_attempt_notification(method, current_time, attempts_count)
+            send_failed_attempt_notification(friendly_method, current_time, attempts_count)
             
         elif access_type == "break_in_attempt":
             # Send break-in notification to admins only
@@ -396,20 +428,17 @@ def log_access():
 
 
 def send_door_unlock_notification(user_name: str, method: str, timestamp: str):
-    """Send door unlock notification via webhook"""
+    """Send door unlock notification via Telegram"""
     try:
-        webhook_data = {
-            "user_name": user_name,
-            "method": method,
-            "timestamp": timestamp
-        }
-        
-        # Send to local webhook server (Telegram bot)
-        requests.post(
-            "http://localhost:8001/webhook/door-unlock",
-            json=webhook_data,
-            timeout=5
+        message = (
+            f"🔓 <b>Door Unlocked Successfully!</b>\n\n"
+            f"👤 User: {user_name}\n"
+            f"🔐 Method: {method.capitalize()}\n"
+            f"⏰ Time: {timestamp}\n\n"
+            f"Have a great day! 🌟"
         )
+        
+        send_telegram_notification(message, "unlock")
         logger.info(f"Door unlock notification sent for user: {user_name}")
         
     except Exception as e:
@@ -417,20 +446,24 @@ def send_door_unlock_notification(user_name: str, method: str, timestamp: str):
 
 
 def send_failed_attempt_notification(method: str, timestamp: str, attempts_count: int):
-    """Send failed attempt notification via webhook"""
+    """Send failed attempt notification via Telegram"""
     try:
-        webhook_data = {
-            "method": method,
-            "timestamp": timestamp,
-            "attempts_count": attempts_count
-        }
+        security_warning = ""
+        if attempts_count > 3:
+            security_warning = f"\n\n⚠️ <b>HIGH ALERT:</b> {attempts_count} failed attempts in the last hour!"
+        elif attempts_count > 1:
+            security_warning = f"\n\n⚠️ <b>CAUTION:</b> {attempts_count} failed attempts in the last hour."
         
-        # Send to local webhook server (Telegram bot)
-        requests.post(
-            "http://localhost:8001/webhook/failed-attempt",
-            json=webhook_data,
-            timeout=5
+        message = (
+            f"🚫 <b>Failed Door Access Attempt</b>\n\n"
+            f"🔐 Method: {method.capitalize()}\n"
+            f"⏰ Time: {timestamp}\n"
+            f"📊 Recent attempts: {attempts_count}"
+            f"{security_warning}\n\n"
+            f"If this wasn't you, please check your premises immediately! 🚨"
         )
+        
+        send_telegram_notification(message, "security_alert")
         logger.info(f"Failed attempt notification sent: {method}")
         
     except Exception as e:
