@@ -3,7 +3,7 @@
 ## 📋 Overview
 
 This setup allows you to access the Door Lock backend API at:
-- **Public URL:** `https://oracle-apis.hardikgarg.me/doorlock/`
+- **Public URL:** `https://your-domain.example.com/doorlock/`
 - **Internal:** `http://localhost:7000/`
 
 **Benefits:**
@@ -81,7 +81,7 @@ Expected response:
 
 ### Test via Nginx (Public)
 ```bash
-curl http://oracle-apis.hardikgarg.me/doorlock/health
+curl http://your-domain.example.com/doorlock/health
 ```
 
 Should return the same response!
@@ -89,10 +89,10 @@ Should return the same response!
 ### Test Other Endpoints
 ```bash
 # Get model info
-curl http://oracle-apis.hardikgarg.me/doorlock/api/get-model-info
+curl http://your-domain.example.com/doorlock/api/get-model-info
 
 # Get users
-curl http://oracle-apis.hardikgarg.me/doorlock/api/get-users
+curl http://your-domain.example.com/doorlock/api/get-users
 ```
 
 ---
@@ -108,7 +108,7 @@ sudo apt install certbot python3-certbot-nginx -y
 ### Get SSL Certificate
 
 ```bash
-sudo certbot --nginx -d oracle-apis.hardikgarg.me
+sudo certbot --nginx -d your-domain.example.com
 ```
 
 Follow the prompts:
@@ -126,7 +126,7 @@ sudo certbot renew --dry-run
 ### Verify HTTPS
 
 ```bash
-curl https://oracle-apis.hardikgarg.me/doorlock/health
+curl https://your-domain.example.com/doorlock/health
 ```
 
 ---
@@ -280,7 +280,7 @@ Uncomment the HTTP to HTTPS redirect in nginx.conf:
 ```nginx
 server {
     listen 80;
-    server_name oracle-apis.hardikgarg.me;
+    server_name your-domain.example.com;
     return 301 https://$server_name$request_uri;
 }
 ```
@@ -371,9 +371,9 @@ After setup, verify:
 - [ ] Nginx is active: `sudo systemctl status nginx`
 - [ ] Config syntax valid: `sudo nginx -t`
 - [ ] Health check works: `curl http://localhost:7000/health`
-- [ ] Nginx proxy works: `curl http://oracle-apis.hardikgarg.me/doorlock/health`
+- [ ] Nginx proxy works: `curl http://your-domain.example.com/doorlock/health`
 - [ ] SSL certificate installed (if using HTTPS)
-- [ ] HTTPS works: `curl https://oracle-apis.hardikgarg.me/doorlock/health`
+- [ ] HTTPS works: `curl https://your-domain.example.com/doorlock/health`
 - [ ] Firewall configured (80, 443 open; 7000 blocked externally)
 - [ ] PM2 auto-restart enabled: `pm2 startup`
 - [ ] Logs are accessible: `sudo tail /var/log/nginx/error.log`
@@ -392,8 +392,8 @@ After setup, verify:
 ## 🎉 All Done!
 
 Your backend is now accessible at:
-- **API Base:** `https://oracle-apis.hardikgarg.me/doorlock`
-- **Health Check:** `https://oracle-apis.hardikgarg.me/doorlock/health`
+- **API Base:** `https://your-domain.example.com/doorlock`
+- **Health Check:** `https://your-domain.example.com/doorlock/health`
 - **Internal:** `http://localhost:7000` (not exposed)
 
 Clean, secure, and production-ready! 🚀

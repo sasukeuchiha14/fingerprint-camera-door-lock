@@ -105,7 +105,7 @@ credentials/
 # =========================================
 # ADDITIONAL
 # =========================================
-pi_assets/
+important/
 documents/
 node_modules/
 .pm2/

@@ -1,7 +1,7 @@
 """
 Flask Backend Server for Door Lock System
 Runs on VPS at localhost:7000 (internal)
-Accessible via: https://oracle-apis.hardikgarg.me/doorlock/
+Accessible via: <your backend URL>/doorlock/
 
 Nginx Configuration:
   location /doorlock/ {
@@ -220,7 +220,8 @@ def train_face_model():
         model_version = f"v{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Save model metadata to database
-        model_url = f"https://oracle-apis.hardikgarg.me/doorlock/models/trained_model.pkl"
+        backend_base = os.getenv("BACKEND_URL", "http://localhost:7000/doorlock").rstrip("/")
+        model_url = f"{backend_base}/models/trained_model.pkl"
         
         # Deactivate old models
         supabase.table("model_metadata").update({"is_active": False}).eq("is_active", True).execute()

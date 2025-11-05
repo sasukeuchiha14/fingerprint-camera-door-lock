@@ -177,7 +177,7 @@ For face images:
 
 **SSH to your VPS:**
 ```bash
-ssh user@oracle-apis.hardikgarg.me
+ssh user@your-domain.example.com
 ```
 
 **Update system:**
@@ -228,7 +228,7 @@ TELEGRAM_BOT_TOKEN=123456789:ABCdef...
 TELEGRAM_ADMIN_CHAT_IDS=  # Leave empty, managed via database now
 
 # Backend URL (for self-reference)
-BACKEND_URL=https://oracle-apis.hardikgarg.me/doorlock
+BACKEND_URL=https://your-domain.example.com/doorlock
 ```
 
 ### Step 5: Setup Nginx Reverse Proxy
@@ -243,7 +243,7 @@ sudo systemctl reload nginx
 **Optional: SSL with Certbot**
 ```bash
 sudo apt install certbot python3-certbot-nginx -y
-sudo certbot --nginx -d oracle-apis.hardikgarg.me
+sudo certbot --nginx -d your-domain.example.com
 ```
 
 ### Step 6: Start Backend Server
@@ -274,7 +274,7 @@ python3 server.py
 curl http://localhost:7000/health
 # Should return: {"status":"healthy","timestamp":"..."}
 
-curl https://oracle-apis.hardikgarg.me/doorlock/health
+curl https://your-domain.example.com/doorlock/health
 # Should also work via nginx
 ```
 
@@ -315,7 +315,7 @@ SUPABASE_URL=https://xxxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...
 
 # Backend
-BACKEND_URL=https://oracle-apis.hardikgarg.me/doorlock
+BACKEND_URL=https://your-domain.example.com/doorlock
 ```
 
 ### Step 4: Install Dependencies
@@ -410,7 +410,7 @@ nano .env
 
 Add:
 ```env
-BACKEND_URL=https://oracle-apis.hardikgarg.me/doorlock
+BACKEND_URL=https://your-domain.example.com/doorlock
 TELEGRAM_BOT_USERNAME=MyDoorLockBot
 ```
 
@@ -493,7 +493,7 @@ sudo systemctl start doorlock-gui.service
 **Verify:**
 ```bash
 # Check user in database
-curl https://oracle-apis.hardikgarg.me/doorlock/api/get-users
+curl https://your-domain.example.com/doorlock/api/get-users
 ```
 
 #### 2. Link Telegram
@@ -668,7 +668,7 @@ curl https://api.telegram.org/bot<TOKEN>/getMe
 
 **"Cloud unavailable"**
 - Check `BACKEND_URL` in .env
-- Test: `curl https://oracle-apis.hardikgarg.me/doorlock/health`
+- Test: `curl https://your-domain.example.com/doorlock/health`
 - Verify internet connection
 
 **"Model not found"**
@@ -740,7 +740,7 @@ python3 server.py
 curl http://localhost:7000/health
 
 # View users
-curl https://oracle-apis.hardikgarg.me/doorlock/api/get-users
+curl https://your-domain.example.com/doorlock/api/get-users
 
 # Reload nginx
 sudo systemctl reload nginx

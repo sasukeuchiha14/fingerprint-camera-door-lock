@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = getenv("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = getenv("SUPABASE_SERVICE_ROLE_KEY")
-BACKEND_URL = getenv("BACKEND_URL", "https://oracle-apis.hardikgarg.me/doorlock")
+BACKEND_URL = getenv("BACKEND_URL", "http://localhost:7000/doorlock")
 ADMIN_CHAT_IDS = getenv("TELEGRAM_ADMIN_CHAT_IDS", "").split(",")  # Comma-separated list
 
 # Initialize Supabase client

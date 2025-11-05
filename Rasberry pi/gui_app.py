@@ -37,7 +37,7 @@ except ImportError as e:
 # CONFIGURATION
 # =========================================
 
-BACKEND_URL = os.getenv("BACKEND_URL", "https://oracle-apis.hardikgarg.me/doorlock")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:7000/doorlock")
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "YourDoorLockBot")
 
 # Screen settings

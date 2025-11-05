@@ -85,7 +85,7 @@ class FaceRecognition:
             import os
             
             # Get backend URL from environment or use default
-            backend_url = os.getenv("BACKEND_URL", "https://oracle-apis.hardikgarg.me/doorlock")
+            backend_url = os.getenv("BACKEND_URL", "http://localhost:7000/doorlock")
             model_url = f"{backend_url}/models/trained_model.pkl"
             
             print(f"[INFO] Downloading model from: {model_url}")
