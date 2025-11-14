@@ -663,6 +663,193 @@ def get_access_logs():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/analytics/unlock-deny-ratio", methods=["GET"])
+def get_unlock_deny_ratio():
+    """
+    Get unlock vs deny statistics
+    Query params:
+        - days: Number of days to analyze (default: 7)
+    """
+    try:
+        days = request.args.get('days', 7, type=int)
+        start_date = (datetime.now() - timedelta(days=days)).isoformat()
+        
+        # Get all access logs within time period
+        logs_response = supabase.table("access_logs").select("access_type").gte("timestamp", start_date).execute()
+        logs = logs_response.data
+        
+        # Count success vs failures
+        success_count = sum(1 for log in logs if log['access_type'] == 'success')
+        failed_count = len(logs) - success_count
+        
+        # Calculate ratio
+        total = len(logs)
+        success_rate = (success_count / total * 100) if total > 0 else 0
+        failure_rate = (failed_count / total * 100) if total > 0 else 0
+        
+        return jsonify({
+            "success": True,
+            "data": {
+                "period_days": days,
+                "total_attempts": total,
+                "successful_unlocks": success_count,
+                "denied_attempts": failed_count,
+                "success_rate": round(success_rate, 2),
+                "failure_rate": round(failure_rate, 2)
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error calculating unlock/deny ratio: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/analytics/peak-access-times", methods=["GET"])
+def get_peak_access_times():
+    """
+    Get peak access timing statistics
+    Query params:
+        - days: Number of days to analyze (default: 7)
+    """
+    try:
+        days = request.args.get('days', 7, type=int)
+        start_date = (datetime.now() - timedelta(days=days)).isoformat()
+        
+        # Get all successful access logs
+        logs_response = supabase.table("access_logs").select("timestamp").eq("access_type", "success").gte("timestamp", start_date).execute()
+        logs = logs_response.data
+        
+        # Count by hour
+        hour_counts = {}
+        for log in logs:
+            try:
+                dt = datetime.fromisoformat(log['timestamp'].replace('Z', '+00:00'))
+                hour = dt.hour
+                hour_counts[hour] = hour_counts.get(hour, 0) + 1
+            except:
+                continue
+        
+        # Find peak hours (top 3)
+        sorted_hours = sorted(hour_counts.items(), key=lambda x: x[1], reverse=True)
+        peak_hours = [{"hour": hour, "count": count, "time_range": f"{hour:02d}:00-{hour:02d}:59"} for hour, count in sorted_hours[:3]]
+        
+        return jsonify({
+            "success": True,
+            "data": {
+                "period_days": days,
+                "total_accesses": len(logs),
+                "peak_hours": peak_hours,
+                "hourly_distribution": [{"hour": h, "count": hour_counts.get(h, 0)} for h in range(24)]
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error calculating peak access times: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/analytics/frequent-users", methods=["GET"])
+def get_frequent_users():
+    """
+    Get most frequent users statistics
+    Query params:
+        - days: Number of days to analyze (default: 7)
+        - limit: Number of top users to return (default: 5)
+    """
+    try:
+        days = request.args.get('days', 7, type=int)
+        limit = request.args.get('limit', 5, type=int)
+        start_date = (datetime.now() - timedelta(days=days)).isoformat()
+        
+        # Get all successful access logs with user info
+        logs_response = supabase.table("access_logs").select("user_id, users(name)").eq("access_type", "success").gte("timestamp", start_date).execute()
+        logs = logs_response.data
+        
+        # Count by user
+        user_counts = {}
+        for log in logs:
+            user_id = log.get('user_id')
+            if user_id and log.get('users'):
+                user_name = log['users']['name']
+                if user_id not in user_counts:
+                    user_counts[user_id] = {"name": user_name, "count": 0}
+                user_counts[user_id]["count"] += 1
+        
+        # Sort by count
+        sorted_users = sorted(user_counts.items(), key=lambda x: x[1]["count"], reverse=True)[:limit]
+        frequent_users = [{"user_id": uid, "name": data["name"], "access_count": data["count"]} for uid, data in sorted_users]
+        
+        return jsonify({
+            "success": True,
+            "data": {
+                "period_days": days,
+                "top_users": frequent_users,
+                "total_unique_users": len(user_counts)
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error calculating frequent users: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/analytics/failure-reasons", methods=["GET"])
+def get_failure_reasons():
+    """
+    Get most common failure reasons
+    Query params:
+        - days: Number of days to analyze (default: 7)
+    """
+    try:
+        days = request.args.get('days', 7, type=int)
+        start_date = (datetime.now() - timedelta(days=days)).isoformat()
+        
+        # Get all failed access logs
+        logs_response = supabase.table("access_logs").select("access_type").ne("access_type", "success").gte("timestamp", start_date).execute()
+        logs = logs_response.data
+        
+        # Count by failure type
+        failure_counts = {}
+        for log in logs:
+            failure_type = log.get('access_type', 'unknown')
+            failure_counts[failure_type] = failure_counts.get(failure_type, 0) + 1
+        
+        # Sort by count
+        sorted_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        # Format with human-readable names
+        failure_names = {
+            "failed_password": "Incorrect PIN",
+            "failed_face": "Face Not Recognized",
+            "failed_fingerprint": "Fingerprint Not Matched",
+            "break_in_attempt": "Break-in Attempt",
+            "unknown": "Unknown Failure"
+        }
+        
+        failure_list = [
+            {
+                "failure_type": ftype,
+                "description": failure_names.get(ftype, ftype.replace('_', ' ').title()),
+                "count": count,
+                "percentage": round(count / len(logs) * 100, 2) if len(logs) > 0 else 0
+            }
+            for ftype, count in sorted_failures
+        ]
+        
+        return jsonify({
+            "success": True,
+            "data": {
+                "period_days": days,
+                "total_failures": len(logs),
+                "failure_breakdown": failure_list
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error calculating failure reasons: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/sync-status", methods=["POST"])
 def sync_status():
     """

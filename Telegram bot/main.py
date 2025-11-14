@@ -436,6 +436,230 @@ async def retrain(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 
+async def analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show analytics dashboard with unlock/deny ratio"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin access required")
+        return
+    
+    try:
+        # Get number of days from argument (default 7)
+        days = 7
+        if context.args and len(context.args) > 0:
+            try:
+                days = int(context.args[0])
+                days = max(1, min(days, 90))  # Limit between 1-90 days
+            except ValueError:
+                await update.message.reply_text("❌ Invalid number of days. Using default (7 days)")
+        
+        # Fetch unlock/deny ratio
+        response = requests.get(f"{BACKEND_URL}/api/analytics/unlock-deny-ratio?days={days}", timeout=10)
+        
+        if response.status_code != 200:
+            await update.message.reply_text(f"❌ Failed to fetch analytics: {response.status_code}")
+            return
+        
+        data = response.json()['data']
+        
+        # Create visual bar chart
+        success_bar = "🟢" * int(data['success_rate'] / 5)
+        failure_bar = "🔴" * int(data['failure_rate'] / 5)
+        
+        analytics_msg = (
+            f"📊 <b>Access Analytics ({days} days)</b>\n\n"
+            f"📈 <b>Total Attempts:</b> {data['total_attempts']}\n\n"
+            f"✅ <b>Successful Unlocks:</b> {data['successful_unlocks']}\n"
+            f"{success_bar} {data['success_rate']}%\n\n"
+            f"🚫 <b>Denied Attempts:</b> {data['denied_attempts']}\n"
+            f"{failure_bar} {data['failure_rate']}%\n\n"
+            f"💡 <i>Use /analytics [days] to change period (max 90)</i>"
+        )
+        
+        await update.message.reply_text(analytics_msg, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Error in analytics command: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+async def peaktimes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show peak access times analysis"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin access required")
+        return
+    
+    try:
+        # Get number of days from argument (default 7)
+        days = 7
+        if context.args and len(context.args) > 0:
+            try:
+                days = int(context.args[0])
+                days = max(1, min(days, 90))
+            except ValueError:
+                await update.message.reply_text("❌ Invalid number of days. Using default (7 days)")
+        
+        # Fetch peak times
+        response = requests.get(f"{BACKEND_URL}/api/analytics/peak-access-times?days={days}", timeout=10)
+        
+        if response.status_code != 200:
+            await update.message.reply_text(f"❌ Failed to fetch peak times: {response.status_code}")
+            return
+        
+        data = response.json()['data']
+        
+        peak_msg = (
+            f"⏰ <b>Peak Access Times ({days} days)</b>\n\n"
+            f"📊 <b>Total Accesses:</b> {data['total_accesses']}\n\n"
+            f"🔝 <b>Top 3 Busiest Hours:</b>\n"
+        )
+        
+        for i, peak in enumerate(data['peak_hours'], 1):
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+            peak_msg += f"{emoji} {peak['time_range']} - {peak['count']} accesses\n"
+        
+        # Add mini hourly chart (simplified)
+        peak_msg += "\n📈 <b>Hourly Distribution:</b>\n"
+        hourly = data['hourly_distribution']
+        max_count = max(h['count'] for h in hourly) if hourly else 1
+        
+        # Show only hours with activity
+        active_hours = [h for h in hourly if h['count'] > 0][:10]  # Top 10 active hours
+        for h in sorted(active_hours, key=lambda x: x['count'], reverse=True)[:5]:
+            bar_length = int((h['count'] / max_count) * 10) if max_count > 0 else 0
+            bar = "▓" * bar_length + "░" * (10 - bar_length)
+            peak_msg += f"{h['hour']:02d}:00 {bar} {h['count']}\n"
+        
+        peak_msg += f"\n💡 <i>Use /peaktimes [days] to change period</i>"
+        
+        await update.message.reply_text(peak_msg, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Error in peaktimes command: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+async def topusers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show most frequent users"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin access required")
+        return
+    
+    try:
+        # Get number of days from argument (default 7)
+        days = 7
+        if context.args and len(context.args) > 0:
+            try:
+                days = int(context.args[0])
+                days = max(1, min(days, 90))
+            except ValueError:
+                await update.message.reply_text("❌ Invalid number of days. Using default (7 days)")
+        
+        # Fetch frequent users
+        response = requests.get(f"{BACKEND_URL}/api/analytics/frequent-users?days={days}&limit=10", timeout=10)
+        
+        if response.status_code != 200:
+            await update.message.reply_text(f"❌ Failed to fetch user stats: {response.status_code}")
+            return
+        
+        data = response.json()['data']
+        
+        if not data['top_users']:
+            await update.message.reply_text(f"📊 No access data found for the past {days} days")
+            return
+        
+        users_msg = (
+            f"👥 <b>Most Frequent Users ({days} days)</b>\n\n"
+            f"📊 <b>Total Unique Users:</b> {data['total_unique_users']}\n\n"
+            f"🏆 <b>Top Users by Access Count:</b>\n"
+        )
+        
+        for i, user in enumerate(data['top_users'], 1):
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+            users_msg += f"{emoji} <b>{user['name']}</b> - {user['access_count']} times\n"
+        
+        users_msg += f"\n💡 <i>Use /topusers [days] to change period</i>"
+        
+        await update.message.reply_text(users_msg, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Error in topusers command: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
+async def failures(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show most common failure reasons"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ Admin access required")
+        return
+    
+    try:
+        # Get number of days from argument (default 7)
+        days = 7
+        if context.args and len(context.args) > 0:
+            try:
+                days = int(context.args[0])
+                days = max(1, min(days, 90))
+            except ValueError:
+                await update.message.reply_text("❌ Invalid number of days. Using default (7 days)")
+        
+        # Fetch failure reasons
+        response = requests.get(f"{BACKEND_URL}/api/analytics/failure-reasons?days={days}", timeout=10)
+        
+        if response.status_code != 200:
+            await update.message.reply_text(f"❌ Failed to fetch failure analysis: {response.status_code}")
+            return
+        
+        data = response.json()['data']
+        
+        if data['total_failures'] == 0:
+            await update.message.reply_text(f"✅ No failed attempts in the past {days} days! 🎉")
+            return
+        
+        failures_msg = (
+            f"🚫 <b>Failure Analysis ({days} days)</b>\n\n"
+            f"📊 <b>Total Failed Attempts:</b> {data['total_failures']}\n\n"
+            f"🔍 <b>Breakdown by Reason:</b>\n"
+        )
+        
+        # Emoji mapping for failure types
+        failure_emojis = {
+            "failed_password": "🔢",
+            "failed_face": "👤",
+            "failed_fingerprint": "👆",
+            "break_in_attempt": "🚨",
+            "unknown": "❓"
+        }
+        
+        for failure in data['failure_breakdown']:
+            emoji = failure_emojis.get(failure['failure_type'], "⚠️")
+            bar_length = int(failure['percentage'] / 5)
+            bar = "▓" * bar_length
+            
+            failures_msg += (
+                f"{emoji} <b>{failure['description']}</b>\n"
+                f"   {bar} {failure['percentage']}% ({failure['count']} times)\n\n"
+            )
+        
+        # Add recommendations based on most common failure
+        top_failure = data['failure_breakdown'][0]['failure_type']
+        if top_failure == "failed_password":
+            failures_msg += "💡 <i>Tip: Consider user PIN training</i>\n"
+        elif top_failure == "failed_face":
+            failures_msg += "💡 <i>Tip: Consider model retraining with more images</i>\n"
+        elif top_failure == "failed_fingerprint":
+            failures_msg += "💡 <i>Tip: Check fingerprint sensor cleanliness</i>\n"
+        elif top_failure == "break_in_attempt":
+            failures_msg += "🚨 <b>Security Alert: Multiple break-in attempts detected!</b>\n"
+        
+        failures_msg += f"\n💡 <i>Use /failures [days] to change period</i>"
+        
+        await update.message.reply_text(failures_msg, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Error in failures command: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show help message"""
     user_id = update.effective_user.id
@@ -445,14 +669,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if is_admin_user:
         help_msg += (
-            "👨‍💼 <b>Admin Commands:</b>\n"
+            "👨‍💼 <b>Admin Commands:</b>\n\n"
+            "🏠 <b>Basic:</b>\n"
             "/start - Welcome message\n"
             "/status - Check system status\n"
-            "/logs [n] - View recent access logs (default: 10)\n"
+            "/help - Show this help message\n\n"
+            "📊 <b>Analytics:</b>\n"
+            "/analytics [days] - Unlock vs deny ratio\n"
+            "/peaktimes [days] - Peak access timings\n"
+            "/topusers [days] - Most frequent users\n"
+            "/failures [days] - Common failure reasons\n\n"
+            "🔧 <b>Management:</b>\n"
+            "/logs [n] - View recent access logs\n"
             "/users - List all registered users\n"
             "/stats - View system statistics\n"
-            "/retrain - Trigger face model retraining\n"
-            "/help - Show this help message\n"
+            "/retrain - Trigger face model retraining\n\n"
+            "<i>💡 [days] is optional (default: 7, max: 90)</i>"
         )
     else:
         help_msg += (
@@ -629,10 +861,18 @@ def main():
     app.add_handler(CommandHandler("users", users))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("retrain", retrain))
+    
+    # Add analytics command handlers
+    app.add_handler(CommandHandler("analytics", analytics))
+    app.add_handler(CommandHandler("peaktimes", peaktimes))
+    app.add_handler(CommandHandler("topusers", topusers))
+    app.add_handler(CommandHandler("failures", failures))
+    
     app.add_handler(CommandHandler("help", help_command))
     
     logger.info("🤖 Door Lock Telegram Bot is running...")
     logger.info("🔔 Real-time notifications enabled")
+    logger.info("📊 Analytics commands loaded")
     
     # Run bot
     app.run_polling()
